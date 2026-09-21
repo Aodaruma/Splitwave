@@ -25,7 +25,8 @@ export const methods = {
 	scanPlugins: (): Promise<PluginDescriptor[]> => invoke<PluginDescriptor[]>('scan_plugins'),
 	openPluginEditor: (nodeId: string, title: string): Promise<void> => invoke('open_plugin_editor', { nodeId, title }),
 	closePluginEditor: (nodeId: string): Promise<void> => invoke('close_plugin_editor', { nodeId }),
-	getPluginState: (nodeId: string): Promise<string | null> => invoke<string | null>('get_plugin_state', { nodeId }),
+	getPluginState: (nodeId: string, expectedPath: string, expectedPluginId: string): Promise<string | null> =>
+		invoke<string | null>('get_plugin_state', { nodeId, expectedPath, expectedPluginId }),
 	getPluginParams: (nodeId: string): Promise<PluginParam[]> => invoke<PluginParam[]>('get_plugin_params', { nodeId }),
 	pluginStatus: (nodeId: string): Promise<PluginStatus> => invoke<PluginStatus>('plugin_status', { nodeId }),
 	onPluginEditorClosed: (cb: (nodeId: string) => void): Promise<UnlistenFn> =>

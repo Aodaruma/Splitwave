@@ -28,21 +28,33 @@ where
 {
     tauri::async_runtime::spawn_blocking(move || {
         let (reply_tx, reply_rx) = mpsc::channel();
-        tx.send(make(reply_tx))
+        let command = make(reply_tx);
+        // Stop owns recording finalization; dropping its reply loses the only outcome.
+        let timeout = (!matches!(command, Command::Stop { .. })).then_some(AUDIO_REPLY_TIMEOUT);
+        tx.send(command)
             .map_err(|_| AppError::Stream("audio thread is gone".into()))?;
-        match reply_rx.recv_timeout(AUDIO_REPLY_TIMEOUT) {
+        wait_audio_reply(reply_rx, timeout)
+    })
+    .await
+    .map_err(|_| AppError::Stream("audio request task failed".into()))?
+}
+
+fn wait_audio_reply<T>(reply_rx: mpsc::Receiver<T>, timeout: Option<Duration>) -> AppResult<T> {
+    match timeout {
+        None => reply_rx
+            .recv()
+            .map_err(|_| AppError::Stream("audio thread reply lost".into())),
+        Some(timeout) => match reply_rx.recv_timeout(timeout) {
             Ok(v) => Ok(v),
             Err(mpsc::RecvTimeoutError::Timeout) => Err(AppError::Stream(format!(
                 "audio thread did not respond within {}s",
-                AUDIO_REPLY_TIMEOUT.as_secs()
+                timeout.as_secs()
             ))),
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 Err(AppError::Stream("audio thread reply lost".into()))
             }
-        }
-    })
-    .await
-    .map_err(|_| AppError::Stream("audio request task failed".into()))?
+        },
+    }
 }
 
 /// Scans standard install directories for hostable plugins. Loading foreign
@@ -76,21 +88,31 @@ pub async fn open_plugin_editor(node_id: String, title: String) -> AppResult<()>
 /// Serializes a running plugin's state to base64 so the FE can persist it in
 /// the node's data. Returns null when the plugin isn't running or has no state.
 #[tauri::command]
-pub async fn get_plugin_state(node_id: String) -> AppResult<Option<String>> {
+pub async fn get_plugin_state(
+    node_id: String,
+    expected_path: Option<String>,
+    expected_plugin_id: Option<String>,
+) -> AppResult<Option<String>> {
     let id = node_id.clone();
+    let expected = crate::audio::plugins::host_api::StateCaptureTarget {
+        path: expected_path,
+        plugin_id: expected_plugin_id,
+    };
     let res = tauri::async_runtime::spawn_blocking(move || {
         crate::audio::plugins::main_thread::run(move || {
             // A format without state persistence reports it; the node then has
             // nothing to store, which is not the same as an empty state.
-            crate::audio::plugins::registry::for_node(&id).and_then(|h| match h.save_state(&id) {
-                Ok(state) => state,
-                Err(unsupported) => {
-                    tracing::debug!(
-                        ?unsupported.format,
-                        capability = unsupported.capability,
-                        "plugin state not persisted"
-                    );
-                    None
+            crate::audio::plugins::registry::for_node(&id).and_then(|h| {
+                match h.save_state(&id, expected) {
+                    Ok(state) => state,
+                    Err(unsupported) => {
+                        tracing::debug!(
+                            ?unsupported.format,
+                            capability = unsupported.capability,
+                            "plugin state not persisted"
+                        );
+                        None
+                    }
                 }
             })
         })
@@ -883,4 +905,62 @@ pub async fn webrtc_join_room(
 #[tauri::command]
 pub async fn webrtc_leave_room(node_id: String) {
     webrtc::leave_room(&node_id).await;
+}
+
+#[cfg(test)]
+mod audio_request_tests {
+    use super::*;
+
+    #[test]
+    fn stop_waits_past_command_timeout_and_preserves_finalize_error() {
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let Command::Stop { reply } = rx.recv().unwrap() else {
+                panic!("expected Stop")
+            };
+            std::thread::sleep(AUDIO_REPLY_TIMEOUT + Duration::from_millis(50));
+            reply
+                .send(Err(AppError::Stream(
+                    "recording finalization failed".into(),
+                )))
+                .unwrap();
+        });
+        let result =
+            tauri::async_runtime::block_on(audio_request(tx, |reply| Command::Stop { reply }));
+        assert_eq!(
+            result.unwrap().unwrap_err().to_string(),
+            "audio stream error: recording finalization failed"
+        );
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn ordinary_requests_still_time_out() {
+        let (_tx, rx) = mpsc::channel::<()>();
+        let error = wait_audio_reply(rx, Some(Duration::ZERO)).unwrap_err();
+        assert!(error.to_string().contains("did not respond within"));
+    }
+
+    #[test]
+    fn stop_reports_a_lost_reply() {
+        let (tx, rx) = mpsc::channel::<()>();
+        drop(tx);
+        let error = wait_audio_reply(rx, None).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "audio stream error: audio thread reply lost"
+        );
+    }
+
+    #[test]
+    fn stop_reports_a_missing_audio_thread() {
+        let (tx, rx) = mpsc::channel();
+        drop(rx);
+        let result =
+            tauri::async_runtime::block_on(audio_request(tx, |reply| Command::Stop { reply }));
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "audio stream error: audio thread is gone"
+        );
+    }
 }

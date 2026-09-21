@@ -6,6 +6,7 @@ import { pipelineStore } from '$lib/modules/pipeline/stores.svelte';
 import { methods as pipelineMethods } from '$lib/modules/pipeline/methods';
 import { isFromFuture } from '$lib/modules/pipeline/migrations';
 import { appSettings } from '$lib/modules/settings/stores.svelte';
+import type { Pipeline, PluginNodeData } from '$lib/modules/pipeline/types';
 
 class DesktopStore {
 	ready = $state(false);
@@ -13,6 +14,7 @@ class DesktopStore {
 	quitting = $state(false);
 	private unlisten?: UnlistenFn;
 	private syncQueue = Promise.resolve();
+	private actionCount = 0;
 
 	async init(): Promise<void> {
 		if (!isTauri()) return;
@@ -46,35 +48,52 @@ class DesktopStore {
 	}
 
 	private async saveBeforeExit(): Promise<void> {
-		const editor = pipelineStore.editorActions;
-		const snapshot = editor?.getSnapshot();
+		await pipelineStore.flushSaves();
+		const snapshot = pipelineStore.editorActions?.getSnapshot();
 		const runningId = audioStore.runningPipelineId;
 		const running = runningId ? (snapshot?.id === runningId ? snapshot : await pipelineMethods.get(runningId)) : null;
 		if (running && audioStore.isRunning) {
+			const captured = new Map<string, { path: string; pluginId: string; state: string; previousState: string | null }>();
 			for (const node of running.nodes) {
 				if (node.kind !== 'plugin' || !node.data.path) continue;
-				const state = await audioMethods.getPluginState(node.id);
-				if (state !== null) node.data = { ...node.data, state };
+				const { path, pluginId, state: previousState } = node.data as PluginNodeData;
+				const state = await audioMethods.getPluginState(node.id, path, pluginId);
+				if (state !== null) captured.set(node.id, { path, pluginId, state, previousState });
 			}
-			if (running.id === snapshot?.id) editor?.revertToSnapshot(running);
-			await pipelineStore.save(running);
+			const applyStates = (p: Pipeline): Pipeline => ({
+				...p,
+				nodes: p.nodes.map((node) => {
+					const capture = captured.get(node.id);
+					if (
+						node.kind !== 'plugin' ||
+						!capture ||
+						node.data.path !== capture.path ||
+						node.data.pluginId !== capture.pluginId ||
+						node.data.state !== capture.previousState
+					)
+						return node;
+					return { ...node, data: { ...node.data, state: capture.state } };
+				})
+			});
+			const editor = pipelineStore.editorActions;
+			const latest = pipelineStore.editorActions?.getSnapshot();
+			if (latest?.id === running.id) editor?.revertToSnapshot(applyStates(latest));
+			else await pipelineStore.update(running.id, applyStates);
 		}
-		if (snapshot && (snapshot.id !== running?.id || !audioStore.isRunning)) await pipelineStore.save(snapshot);
+		const latest = pipelineStore.editorActions?.getSnapshot();
+		if (latest) await pipelineStore.save(latest);
+		await pipelineStore.flushSaves();
 		appSettings.persist();
 	}
 
 	private async handleAction(action: string): Promise<void> {
-		if (this.busy) {
-			if (action === 'quit' && !this.quitting) await invoke('cancel_desktop_exit');
-			return;
-		}
+		if (this.quitting || (this.busy && action !== 'quit' && action !== 'stop')) return;
+		this.actionCount += 1;
 		this.busy = true;
 		try {
 			if (action === 'quit') {
 				this.quitting = true;
-				audioStore.shuttingDown = true;
-				await this.saveBeforeExit();
-				await audioStore.stopForExit();
+				await audioStore.stopForExit(() => this.saveBeforeExit());
 				await invoke('complete_desktop_exit');
 			} else if (action === 'autostart') {
 				await appSettings.setLaunchOnStartup(!appSettings.launchOnStartup);
@@ -97,13 +116,16 @@ class DesktopStore {
 				}
 			}
 		} catch (error) {
-			audioStore.shuttingDown = false;
-			await invoke('cancel_desktop_exit');
+			if (action === 'quit') {
+				audioStore.shuttingDown = false;
+				await invoke('cancel_desktop_exit');
+			}
 			await invoke('show_main_window');
 			audioStore.reportError(error);
 		} finally {
-			this.busy = false;
-			this.quitting = false;
+			this.actionCount -= 1;
+			this.busy = this.actionCount > 0;
+			if (action === 'quit') this.quitting = false;
 			await this.sync().catch((error) => audioStore.reportError(error));
 		}
 	}

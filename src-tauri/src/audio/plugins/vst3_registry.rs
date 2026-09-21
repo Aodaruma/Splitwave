@@ -14,7 +14,7 @@ use tauri::Emitter;
 
 use super::host_api::{
     alive_flag, tag_state, untag_state, ActivateRequest, AliveFlag, EditorSize, Graveyard,
-    HostedNode, PluginHost, PluginParamInfo, PluginStatus, Unsupported,
+    HostedNode, PluginHost, PluginParamInfo, PluginStatus, StateCaptureTarget, Unsupported,
 };
 use super::vst3_backend::Vst3Module;
 use super::vst3_com::EditListener;
@@ -303,8 +303,15 @@ impl PluginHost for Vst3Host {
         with_slot(node_id, |slot| slot.instance.params()).unwrap_or_default()
     }
 
-    fn save_state(&self, node_id: &str) -> Result<Option<String>, Unsupported> {
-        Ok(with_slot(node_id, |slot| {
+    fn save_state(
+        &self,
+        node_id: &str,
+        expected: StateCaptureTarget,
+    ) -> Result<Option<String>, Unsupported> {
+        Ok(with_slot(node_id, move |slot| {
+            if !expected.matches(&slot.path, &slot.plugin_id) {
+                return None;
+            }
             slot.instance
                 .save_state()
                 .map(|blob| tag_state(&slot.plugin_id, &blob))

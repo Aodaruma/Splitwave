@@ -250,6 +250,10 @@ impl ClapInstance {
         &self.path
     }
 
+    pub fn plugin_id(&self) -> &str {
+        &self.plugin_id
+    }
+
     /// Starts processing and hands back the `Send` half for the DSP worker.
     pub fn activate(
         &mut self,

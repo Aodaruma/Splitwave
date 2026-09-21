@@ -18,7 +18,7 @@ pub(super) const fn fourcc(s: &[u8; 4]) -> u32 {
     ((s[0] as u32) << 24) | ((s[1] as u32) << 16) | ((s[2] as u32) << 8) | (s[3] as u32)
 }
 
-fn fourcc_str(v: u32) -> String {
+pub(super) fn fourcc_str(v: u32) -> String {
     let bytes = v.to_be_bytes();
     // A type/subtype/manufacturer code is four printable ASCII bytes by
     // convention, but nothing enforces it, so a stray byte becomes hex.
