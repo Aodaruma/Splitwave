@@ -302,6 +302,24 @@ impl ActivePipeline {
             .unwrap_or(0)
     }
 
+    pub fn stop(mut self) -> AppResult<()> {
+        for recorder in self.recorders.values() {
+            recorder.worker.stop.store(true, Ordering::SeqCst);
+        }
+        let mut errors = Vec::new();
+        for (id, mut recorder) in self.recorders.drain() {
+            if let Err(error) = recorder.worker.finish() {
+                errors.push(format!("{id}: {error}"));
+            }
+        }
+        self.teardown();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::Stream(errors.join("; ")))
+        }
+    }
+
     fn teardown(&mut self) {
         if let Some(current) = &self.current {
             for inp in &current.inputs {

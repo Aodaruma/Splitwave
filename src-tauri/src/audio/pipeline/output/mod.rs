@@ -191,14 +191,25 @@ impl Drop for SpeakerWorker {
 
 pub(super) struct RecorderWorker {
     pub stop: Arc<AtomicBool>,
-    pub join: Option<JoinHandle<()>>,
+    pub join: Option<JoinHandle<AppResult<()>>>,
+}
+
+impl RecorderWorker {
+    pub fn finish(&mut self) -> AppResult<()> {
+        self.stop.store(true, Ordering::SeqCst);
+        match self.join.take() {
+            Some(join) => join
+                .join()
+                .map_err(|_| AppError::Stream("recording worker panicked".into()))?,
+            None => Ok(()),
+        }
+    }
 }
 
 impl Drop for RecorderWorker {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        if let Some(j) = self.join.take() {
-            let _ = j.join();
+        if let Err(error) = self.finish() {
+            warn!(%error, "recording did not finish successfully");
         }
     }
 }
@@ -435,6 +446,7 @@ pub(super) fn start_monitor_worker(graph: OutputGraph) -> AppResult<(RecorderWor
                 Some(("monitor", sample_rate)),
                 |_block, _| Ok(()),
             );
+            Ok(())
         })
         .map_err(|e| AppError::Stream(format!("spawn monitor worker: {e}")))?;
     Ok((
@@ -469,6 +481,7 @@ pub(super) fn start_wire_sender_worker(
                 Some(("netsender", sample_rate)),
                 |_block, _| Ok(()),
             );
+            Ok(())
         })
         .map_err(|e| AppError::Stream(format!("spawn net sender worker: {e}")))?;
     Ok((
@@ -529,7 +542,7 @@ pub(super) fn start_recorder_worker(
                                 "error": e.to_string(),
                             }),
                         );
-                        return;
+                        return Err(e);
                     }
                 };
 
@@ -542,15 +555,20 @@ pub(super) fn start_recorder_worker(
             // reflect total content, not just this session's bytes.
             let mut frames_written: u64 = base_frames;
             let mut encoder = encoder;
+            let mut write_error = None;
 
             worker.run(stop_thread, clock, None, |block, _| {
-                encoder.write_interleaved(block)?;
+                if let Err(error) = encoder.write_interleaved(block) {
+                    write_error = Some(error.to_string());
+                    return Err(error);
+                }
                 frames_written += (block.len() / channels_usize) as u64;
                 wave_thread.push_interleaved(block, block.len() / channels_usize, base_frames);
 
                 if last_flush.elapsed() >= FLUSH_INTERVAL {
-                    if let Err(e) = encoder.flush() {
-                        warn!(error = %e, "recorder flush failed");
+                    if let Err(error) = encoder.flush() {
+                        write_error = Some(error.to_string());
+                        return Err(error);
                     }
                     last_flush = std::time::Instant::now();
                 }
@@ -570,6 +588,11 @@ pub(super) fn start_recorder_worker(
                 Ok(())
             });
 
+            let finalized = encoder.finalize();
+            let result = match write_error {
+                Some(error) => Err(AppError::Stream(error)),
+                None => finalized,
+            };
             let _ = app.emit(
                 "audio://recorder_progress",
                 json!({
@@ -579,12 +602,10 @@ pub(super) fn start_recorder_worker(
                     "stopped": true,
                     "session": session,
                     "baseFrames": base_frames,
+                    "error": result.as_ref().err().map(ToString::to_string),
                 }),
             );
-
-            if let Err(e) = encoder.finalize() {
-                warn!(error = %e, "recorder finalize failed");
-            }
+            result
         })
         .map_err(|e| AppError::Stream(format!("spawn recorder thread: {e}")))?;
 
@@ -602,6 +623,44 @@ pub(super) fn start_recorder_worker(
 mod tests {
     use super::*;
     use crate::audio::pipeline::dag::RESAMPLE_CHUNK;
+
+    #[test]
+    fn recorder_finish_waits_for_finalization_and_returns_failure() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = stop.clone();
+        let finalized = Arc::new(AtomicBool::new(false));
+        let finalized_thread = finalized.clone();
+        let mut worker = RecorderWorker {
+            stop,
+            join: Some(thread::spawn(move || {
+                while !stop_thread.load(Ordering::SeqCst) {
+                    thread::yield_now();
+                }
+                finalized_thread.store(true, Ordering::SeqCst);
+                Err(AppError::Stream("disk full".into()))
+            })),
+        };
+        assert!(worker
+            .finish()
+            .unwrap_err()
+            .to_string()
+            .contains("disk full"));
+        assert!(finalized.load(Ordering::SeqCst));
+        assert!(worker.finish().is_ok());
+    }
+
+    #[test]
+    fn recorder_finish_reports_worker_panic() {
+        let mut worker = RecorderWorker {
+            stop: Arc::new(AtomicBool::new(false)),
+            join: Some(thread::spawn(|| panic!("encoder failed"))),
+        };
+        assert!(worker
+            .finish()
+            .unwrap_err()
+            .to_string()
+            .contains("panicked"));
+    }
 
     #[test]
     fn test_output_resampler_bypassed_when_rates_match() {

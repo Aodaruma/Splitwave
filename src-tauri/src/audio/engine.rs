@@ -99,12 +99,8 @@ pub fn run(rx: Receiver<Command>) {
                 }
             }
             Command::Stop { reply } => {
-                if active.take().is_none() {
-                    info!("stop: pipeline was already idle");
-                } else {
-                    info!("pipeline torn down");
-                }
-                let _ = reply.send(Ok(()));
+                let result = active.take().map_or(Ok(()), ActivePipeline::stop);
+                let _ = reply.send(result);
             }
             Command::Reconcile { graph, app, reply } => match active.as_mut() {
                 None => {

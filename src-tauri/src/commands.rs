@@ -532,10 +532,8 @@ pub async fn stop_pipeline(state: State<'_, AppState>, app: AppHandle) -> AppRes
     info!("stopping pipeline");
     let tx = state.audio_tx.clone();
     let result = audio_request(tx, |reply| Command::Stop { reply }).await?;
-    if result.is_ok() {
-        info!("pipeline stopped");
-        let _ = app.emit(STATE_EVENT, json!({ "kind": "stopped" }));
-    }
+    info!("pipeline stopped");
+    let _ = app.emit(STATE_EVENT, json!({ "kind": "stopped" }));
     result
 }
 
