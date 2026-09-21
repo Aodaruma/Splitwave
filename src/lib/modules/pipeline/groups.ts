@@ -36,7 +36,7 @@ export interface GroupDocument {
 	definitions: Record<string, GroupDefinition>;
 	/** Paths belong to occurrences, never to a shared definition. */
 	runtimeIds: Record<string, string>;
-	pluginStates: Record<string, { path: string; pluginId: string; state: string }>;
+	pluginStates: Record<string, { path: string; pluginId: string; state: string | null }>;
 }
 
 export function definition(doc: GroupDocument, id: string): GroupDefinition {
@@ -99,6 +99,27 @@ export function dependencies(doc: GroupDocument, root = doc.root): Record<string
 	return result;
 }
 
+export function effectiveNodeData(doc: GroupDocument, id: string, node: PipelineNode): PipelineNode['data'] {
+	const state = doc.pluginStates[id];
+	return node.kind === 'plugin' && state?.path === node.data.path && state?.pluginId === node.data.pluginId
+		? { ...node.data, state: state.state }
+		: { ...node.data };
+}
+
+export function saveNodeData(doc: GroupDocument, id: string, node: PipelineNode, data: PipelineNode['data']): PipelineNode['data'] {
+	if (node.kind !== 'plugin') return data;
+	if (node.data.path !== data.path || node.data.pluginId !== data.pluginId) {
+		delete doc.pluginStates[id];
+		return data;
+	}
+	const state = data.state ?? null;
+	if (state !== (effectiveNodeData(doc, id, node).state ?? null) && (typeof state === 'string' || state === null)) {
+		doc.pluginStates[id] = { path: String(data.path), pluginId: String(data.pluginId), state };
+	}
+	// Displaying a capture must not publish it to the shared definition.
+	return { ...data, state: node.data.state ?? null };
+}
+
 export function expand(doc: GroupDocument): { nodes: PipelineNode[]; edges: PipelineEdge[] } {
 	dependencies(doc);
 	const nodes: PipelineNode[] = [];
@@ -126,11 +147,9 @@ export function expand(doc: GroupDocument): { nodes: PipelineNode[]; edges: Pipe
 			if (n.kind === 'group') visit(definition(doc, n.data.definition), [...path, n.id]);
 			else {
 				const id = runtimeId(doc, path, n.id);
-				const state = doc.pluginStates[id];
-				const data =
-					n.kind === 'plugin' && state?.path === n.data.path && state?.pluginId === n.data.pluginId
-						? { ...n.data, state: state.state }
-						: { ...n.data };
+				const captured = doc.pluginStates[id];
+				if (captured && (n.kind !== 'plugin' || captured.path !== n.data.path || captured.pluginId !== n.data.pluginId)) delete doc.pluginStates[id];
+				const data = effectiveNodeData(doc, id, n);
 				const { identity: _, ...node } = n;
 				nodes.push({ ...node, id, data });
 			}
@@ -267,7 +286,7 @@ export function ungroup(doc: GroupDocument, path: string[], id: string) {
 	];
 }
 
-export function copyDefinition(doc: GroupDocument, id: string): string {
+export function copyDefinition(doc: GroupDocument, id: string, preserveConfiguration = false): string {
 	const originals = dependencies(doc, id);
 	const ids = new Map(Object.keys(originals).map((id) => [id, createId()]));
 	for (const original of Object.values(originals)) {
@@ -275,6 +294,14 @@ export function copyDefinition(doc: GroupDocument, id: string): string {
 		copy.id = ids.get(original.id)!;
 		copy.revision = 0;
 		copy.nodes = copy.nodes.map((n) => (n.kind === 'group' ? { ...n, data: { definition: ids.get(n.data.definition)! } } : n));
+		if (!preserveConfiguration)
+			for (const n of copy.nodes) {
+				if (n.kind === 'fileRecording') n.data.filePath = null;
+				if (n.kind === 'mute') {
+					delete n.data.hotkey;
+					if (n.data.pushToTalk) n.data.muted = true;
+				}
+			}
 		doc.definitions[copy.id] = copy;
 	}
 	return ids.get(id)!;
@@ -295,7 +322,7 @@ export function assertReusableInstance(doc: GroupDocument, id: string) {
 export function makeIndependent(doc: GroupDocument, path: string[], id: string) {
 	const n = scopeAt(doc, path).nodes.find((n) => n.id === id);
 	if (n?.kind !== 'group') throw new Error('Select a group');
-	n.data.definition = copyDefinition(doc, n.data.definition);
+	n.data.definition = copyDefinition(doc, n.data.definition, true);
 }
 
 export function copyInstanceState(source: GroupDocument, sourcePath: string[], target: GroupDocument, targetPath: string[]) {
@@ -316,7 +343,7 @@ export function capturePluginStates(p: Pipeline): Pipeline {
 	if (!p.groups) return p;
 	const doc = structuredClone(p.groups);
 	for (const n of p.nodes)
-		if (n.kind === 'plugin' && typeof n.data.state === 'string') {
+		if (n.kind === 'plugin' && (typeof n.data.state === 'string' || n.data.state === null)) {
 			doc.pluginStates[n.id] = { path: String(n.data.path), pluginId: String(n.data.pluginId), state: n.data.state };
 		}
 	return { ...p, groups: doc };
@@ -339,17 +366,12 @@ export function assertLiveRestore(current: Pipeline, next: Pipeline) {
 
 export function patchRuntimeNode(p: Pipeline, id: string, patch: Record<string, unknown>): Pipeline {
 	const doc = documentFor(p);
-	const plugin = p.nodes.find((n) => n.id === id && n.kind === 'plugin');
-	if (plugin && Object.keys(patch).length === 1 && typeof patch.state === 'string') {
-		doc.pluginStates[id] = { path: String(plugin.data.path), pluginId: String(plugin.data.pluginId), state: patch.state };
-		return materialize(p, doc);
-	}
 	function visit(d: GroupDefinition, path: string[]): boolean {
 		for (const n of d.nodes) {
 			if (n.kind === 'group') {
 				if (visit(definition(doc, n.data.definition), [...path, n.id])) return true;
 			} else if (runtimeId(doc, path, n.id) === id) {
-				n.data = { ...n.data, ...patch } as PipelineNode['data'];
+				n.data = saveNodeData(doc, id, n, { ...effectiveNodeData(doc, id, n), ...patch } as PipelineNode['data']);
 				return true;
 			}
 		}

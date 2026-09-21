@@ -5,6 +5,7 @@
 	import { platform } from '@tauri-apps/plugin-os';
 	import { modalManager } from '$lib/modules/overlay/modal';
 	import { copyGraph, offsetOrigin, pasteGraph } from '../utils/clipboard';
+	import { createHistoryRestorer } from '../utils/history_restore';
 	import { planAutoConnect, type AudioPorts } from '../utils/auto_connect';
 	import { canvasShortcut } from '../utils/shortcuts';
 	import type { NodeKind, Pipeline } from '$lib/modules/pipeline/types';
@@ -37,7 +38,14 @@
 		runtimeId,
 		type GroupDocument
 	} from '$lib/modules/pipeline/groups';
-	import { assertFresh, definitionContent, usageCount, validateSharedRoutes, type GroupLibrary } from '$lib/modules/pipeline/group_library';
+	import {
+		assertFresh,
+		definitionContent,
+		findGroupInstance,
+		usageCount,
+		validateSharedRoutes,
+		type GroupLibrary
+	} from '$lib/modules/pipeline/group_library';
 	import { GROUP_ACTIONS, groupView, saveGroupView } from '../utils/group_view';
 	const editorNodeTypes = { ...nodeTypes, group: Group, groupBoundary: GroupBoundary };
 	import ChannelEdge from './_channel_edge.svelte';
@@ -175,8 +183,8 @@
 			}
 			const instance = createId();
 			scopeAt(doc, groupPath).nodes.push({ id: instance, kind: 'group', data: { definition: id }, position: { x: 150, y: 150 } });
-			const source = Object.values(groupLibrary.pipelines).find((p) => p.groups?.root === chooserId);
-			if (source?.groups) copyInstanceState(source.groups, [], doc, [...groupPath, instance]);
+			const source = findGroupInstance(groupLibrary, chooserId);
+			if (source) copyInstanceState(source.doc, source.path, doc, [...groupPath, instance]);
 		});
 		chooserOpen = false;
 	}
@@ -692,6 +700,7 @@
 		validateSharedRoutes({ ...groupLibrary, pipelines: { ...groupLibrary.pipelines, [snapshot.id]: snapshot } });
 		groupDocument.runtimeIds = { ...doc.runtimeIds };
 		groupDocument.definitions = doc.definitions;
+		groupDocument.pluginStates = doc.pluginStates;
 		return snapshot;
 	}
 	async function restoreSnapshot(p: Pipeline): Promise<boolean> {
@@ -828,16 +837,19 @@
 		commit(getSnapshot());
 	}
 
-	async function undo() {
-		flushPendingCommit();
-		if (cursor === 0) return;
-		if (await restoreSnapshot(history[cursor - 1])) cursor -= 1;
+	const restoreHistory = createHistoryRestorer({
+		flush: flushPendingCommit,
+		current: () => ({ history, cursor }),
+		restore: restoreSnapshot,
+		setCursor: (next) => (cursor = next)
+	});
+
+	function undo() {
+		return restoreHistory(-1);
 	}
 
-	async function redo() {
-		flushPendingCommit();
-		if (cursor >= history.length - 1) return;
-		if (await restoreSnapshot(history[cursor + 1])) cursor += 1;
+	function redo() {
+		return restoreHistory(1);
 	}
 
 	pipelineStore.editorActions = {
@@ -1112,7 +1124,10 @@
 					</select>
 				</label>
 				<label><input type="checkbox" bind:checked={chooserLinked} /> Linked reference — edits apply to every use</label>
-				<p>Inputs, microphones and recording destinations are kept. All groups run inside this pipeline.</p>
+				<p>
+					Inputs and microphones are kept. Independent copies clear recording destinations and mute hotkeys. Linked copies share them. All groups run
+					inside this pipeline.
+				</p>
 				<div class="flex gap-3">
 					<button disabled={!chooserId} onclick={insertGroup}>Add {chooserLinked ? 'linked' : 'independent'} group</button><button
 						onclick={() => (chooserOpen = false)}>Cancel</button>

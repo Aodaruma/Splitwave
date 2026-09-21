@@ -11,13 +11,16 @@ import {
 	makeIndependent,
 	materialize,
 	patchRuntimeNode,
+	runtimeId,
 	scopeAt,
 	ungroup,
 	type GroupDocument,
 	type GroupNode
 } from '../src/lib/modules/pipeline/groups';
-import { saveToLibrary, type GroupLibrary } from '../src/lib/modules/pipeline/group_library';
+import { findGroupInstance, saveToLibrary, type GroupLibrary } from '../src/lib/modules/pipeline/group_library';
 import { groupView, saveGroupView } from '../src/lib/modules/flow/utils/group_view';
+import { createHistoryRestorer } from '../src/lib/modules/flow/utils/history_restore';
+import { withDefaults } from '../src/lib/modules/pipeline/defaults';
 import { migrate, isFromFuture } from '../src/lib/modules/pipeline/migrations';
 import { planAutoConnect } from '../src/lib/modules/flow/utils/auto_connect';
 import { copyGraph, pasteGraph } from '../src/lib/modules/flow/utils/clipboard';
@@ -48,6 +51,11 @@ const routing = (g: ReturnType<typeof expand>) => ({
 });
 const empty = (): GroupLibrary => ({ version: 3, pipelines: {}, definitions: {} });
 const group = (doc: GroupDocument, id: string): GroupNode => definition(doc, doc.root).nodes.find((n) => n.id === id) as GroupNode;
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((done) => (resolve = done));
+	return { promise, resolve };
+}
 
 describe('reusable node groups', () => {
 	it('group and ungroup preserve IDs, fan-out, sidechain handles and wiring', () => {
@@ -173,6 +181,132 @@ describe('reusable node groups', () => {
 		copyInstanceState(captured.groups!, ['second'], cloned, ['third']);
 		expect(expand(cloned).nodes.filter((n) => n.data.state === 'instance')).toHaveLength(2);
 	});
+	it('reusable insertion inherits the saved occurrence state of a nested child group', () => {
+		const p = pipeline();
+		p.nodes[1] = { ...node('a', 'plugin'), data: withDefaults('plugin', { path: 'p', pluginId: 'plug', state: 'factory' }) };
+		const doc = documentFor(p);
+		const child = groupSelection(doc, [], ['a']);
+		const childDefinition = group(doc, child).data.definition;
+		const outer = groupSelection(doc, [], [child]);
+		const library = saveToLibrary(empty(), patchRuntimeNode(materialize(p, doc), 'a', { state: 'user-preset' }));
+		const before = structuredClone(library);
+		const source = findGroupInstance(library, childDefinition)!;
+		expect(source.path).toEqual([outer, child]);
+		expect(findGroupInstance(library, doc.root)?.path).toEqual([]);
+		expect(findGroupInstance(library, 'unused')).toBeUndefined();
+		for (const linked of [false, true]) {
+			const target = documentFor({ ...pipeline('q'), nodes: [], edges: [] });
+			Object.assign(target.definitions, structuredClone(library.definitions));
+			const id = linked ? childDefinition : copyDefinition(target, childDefinition);
+			definition(target, target.root).nodes.push({ id: 'inserted', kind: 'group', data: { definition: id }, position: { x: 0, y: 0 } });
+			copyInstanceState(source.doc, source.path, target, ['inserted']);
+			const copied = expand(target).nodes[0];
+			expect(copied.id).not.toBe('a');
+			expect(copied.data.state).toBe('user-preset');
+			expect(definition(target, id).nodes[0].data).toMatchObject({ state: 'factory' });
+		}
+		expect(library).toEqual(before);
+	});
+	it('group views round-trip captured plugin states without broadcasting them to linked instances', () => {
+		const p = pipeline();
+		p.nodes[1] = { ...node('a', 'plugin'), data: withDefaults('plugin', { path: 'p', pluginId: 'plug', state: 'factory' }) };
+		const doc = documentFor(p);
+		const first = groupSelection(doc, [], ['a']);
+		definition(doc, doc.root).nodes.push({ ...structuredClone(group(doc, first)), id: 'linked', identity: undefined });
+		const linkedId = runtimeId(doc, ['linked'], 'a');
+		let library = saveToLibrary(empty(), patchRuntimeNode(materialize(p, doc), linkedId, { state: 'captured' }));
+		const edit = documentFor(library.pipelines.p);
+		const sharedData = structuredClone(scopeAt(edit, ['linked']).nodes[0].data);
+		const view = groupView(edit, ['linked']);
+		expect(view.nodes.find((n) => n.id === linkedId)!.data.state).toBe('captured');
+		saveGroupView(edit, ['linked'], view.nodes, view.edges);
+		library = saveToLibrary(library, materialize(p, edit));
+		const reloaded = JSON.parse(JSON.stringify(library.pipelines.p)) as Pipeline;
+		expect(reloaded.nodes.find((n) => n.id === linkedId)!.data.state).toBe('captured');
+		expect(reloaded.nodes.find((n) => n.id === 'a')!.data.state).toBe('factory');
+		expect(scopeAt(reloaded.groups!, ['linked']).nodes[0].data).toEqual(sharedData);
+		expect(reloaded.nodes).toHaveLength(5);
+		expect(reloaded.edges).toHaveLength(4);
+	});
+	it('explicit plugin presets, resets and selection changes replace stale occurrence state', () => {
+		const p = pipeline();
+		p.nodes[1] = { ...node('a', 'plugin'), data: withDefaults('plugin', { path: 'p', pluginId: 'plug', state: 'factory' }) };
+		let doc = documentFor(p);
+		const first = groupSelection(doc, [], ['a']);
+		definition(doc, doc.root).nodes.push({ ...structuredClone(group(doc, first)), id: 'linked', identity: undefined });
+		const linkedId = runtimeId(doc, ['linked'], 'a');
+		doc = documentFor(patchRuntimeNode(materialize(p, doc), 'a', { state: 'captured' }));
+		let view = groupView(doc, [first]);
+		Object.assign(view.nodes.find((n) => n.id === 'a')!.data, { state: 'preset', bypassed: true });
+		saveGroupView(doc, [first], view.nodes, view.edges);
+		let full = materialize(p, doc);
+		expect(full.nodes.find((n) => n.id === 'a')!.data.state).toBe('preset');
+		expect(full.nodes.find((n) => n.id === linkedId)!.data).toMatchObject({ state: 'factory', bypassed: true });
+		full = patchRuntimeNode(full, 'a', { state: 'runtime-preset', bypassed: false });
+		expect(full.nodes.find((n) => n.id === 'a')!.data).toMatchObject({ state: 'runtime-preset', bypassed: false });
+		doc = documentFor(full);
+		view = groupView(doc, [first]);
+		view.nodes.find((n) => n.id === 'a')!.data.state = null;
+		saveGroupView(doc, [first], view.nodes, view.edges);
+		full = saveToLibrary(empty(), materialize(p, doc)).pipelines.p;
+		expect(full.nodes.find((n) => n.id === 'a')!.data.state).toBeNull();
+		expect(full.nodes.find((n) => n.id === linkedId)!.data.state).toBe('factory');
+		full = patchRuntimeNode(full, 'a', { state: 'another-capture' });
+		doc = documentFor(full);
+		view = groupView(doc, [first]);
+		Object.assign(view.nodes.find((n) => n.id === 'a')!.data, { path: 'other', pluginId: 'other', state: null });
+		saveGroupView(doc, [first], view.nodes, view.edges);
+		expect(doc.pluginStates.a).toBeUndefined();
+		full = patchRuntimeNode(materialize(p, doc), 'a', { path: 'p', pluginId: 'plug', state: 'new-preset' });
+		expect(full.nodes.find((n) => n.id === 'a')!.data.state).toBe('new-preset');
+		expect(full.nodes.find((n) => n.id === linkedId)!.data.state).toBe('new-preset');
+		full = patchRuntimeNode(full, 'a', { state: null, bypassed: true });
+		expect(full.nodes.find((n) => n.id === 'a')!.data.state).toBeNull();
+	});
+	it('legacy nodes receive withDefaults in root and nested views and keep them on save', () => {
+		const p = { ...pipeline(), nodes: [node('a', 'compressor'), node('b', 'audioFile'), node('c', 'eq')], edges: [] };
+		p.nodes[0].data = { thresholdDb: -25 } as PipelineNode['data'];
+		p.nodes[1].data = { filePath: 'input.wav' } as PipelineNode['data'];
+		p.nodes[2].data = {} as PipelineNode['data'];
+		for (const nested of [false, true]) {
+			const doc = documentFor(p);
+			const path = nested ? [groupSelection(doc, [], ['a', 'b', 'c'])] : [];
+			const view = groupView(doc, path);
+			for (const original of p.nodes) expect(view.nodes.find((n) => n.id === original.id)!.data).toEqual(withDefaults(original.kind, original.data));
+			(view.nodes.find((n) => n.id === 'c')!.data.gainsDb as number[])[0] = 6;
+			expect(withDefaults('eq', {}).gainsDb[0]).toBe(0);
+			saveGroupView(doc, path, view.nodes, view.edges);
+			const full = materialize(p, doc);
+			expect(full.nodes[0].data).toMatchObject({ thresholdDb: -25, ratio: 3, bypassed: false });
+			expect(full.nodes[1].data).toMatchObject({ filePath: 'input.wav', autoStart: true, loopEnabled: false });
+			expect(groupView(doc, path).nodes.find((n) => n.id === 'c')!.data.gainsDb).toEqual([6, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+		}
+	});
+	it('independent copies and imports clear nested destinations and hotkeys while Make Independent preserves them', () => {
+		const p = pipeline();
+		p.nodes[1] = { ...node('a', 'mute'), data: withDefaults('mute', { hotkey: 'Ctrl+M', pushToTalk: true, muted: false, cueEnabled: true }) };
+		p.nodes[2] = { ...node('b', 'audioFile'), data: withDefaults('audioFile', { filePath: 'input.wav', loopEnabled: true }) };
+		p.nodes[3].data = withDefaults('fileRecording', { filePath: 'record.wav' });
+		const doc = documentFor(p);
+		const child = groupSelection(doc, [], ['a', 'rec']);
+		const outer = groupSelection(doc, [], [child, 'b']);
+		const original = group(doc, outer);
+		const originalDefinition = original.data.definition;
+		const before = routing(expand(doc));
+		for (const source of [original.data.definition, doc.root]) {
+			const copied = copyDefinition(doc, source);
+			const flat = expand({ ...doc, root: copied, runtimeIds: {} });
+			expect(flat.nodes.find((n) => n.kind === 'fileRecording')!.data.filePath).toBeNull();
+			const mute = flat.nodes.find((n) => n.kind === 'mute')!.data;
+			expect(mute.hotkey).toBeUndefined();
+			expect(mute).toMatchObject({ pushToTalk: true, muted: true, cueEnabled: true });
+			expect(flat.nodes.find((n) => n.kind === 'audioFile')!.data.filePath).toBe('input.wav');
+		}
+		expect(routing(expand(doc))).toEqual(before);
+		makeIndependent(doc, [], outer);
+		expect(routing(expand(doc))).toEqual(before);
+		expect(group(doc, outer).data.definition).not.toBe(originalDefinition);
+	});
 	it('duplicate through the clipboard preserves a group and its port wiring', () => {
 		const doc = documentFor(pipeline());
 		const id = groupSelection(doc, [], ['a', 'b']);
@@ -261,5 +395,94 @@ describe('reusable node groups', () => {
 			'ch1',
 			'ch2'
 		]);
+	});
+});
+
+describe('serialized group history restoration', () => {
+	it('selects each Undo/Redo target after the preceding delayed restore updates the cursor', async () => {
+		const p = pipeline();
+		const doc = documentFor(p);
+		groupSelection(doc, [], ['a', 'b']);
+		const history = ['A', 'B', 'C'].map((name) => materialize({ ...p, name }, structuredClone(doc)));
+		let cursor = 2;
+		let shown = history[cursor];
+		const started = deferred<void>();
+		const saved = deferred<void>();
+		const targets: string[] = [];
+		const flushed: number[] = [];
+		const move = createHistoryRestorer({
+			flush: () => {
+				flushed.push(cursor);
+			},
+			current: () => ({ history, cursor }),
+			restore: async (snapshot) => {
+				targets.push(snapshot.name);
+				if (targets.length === 1) {
+					started.resolve();
+					await saved.promise;
+				}
+				shown = structuredClone(snapshot);
+				return true;
+			},
+			setCursor: (next) => (cursor = next)
+		});
+		const requests = [move(-1), move(-1), move(1)];
+		await started.promise;
+		expect(targets).toEqual(['B']);
+		expect(flushed).toEqual([2]);
+		expect(cursor).toBe(2);
+		saved.resolve();
+		await Promise.all(requests);
+		expect(targets).toEqual(['B', 'A', 'B']);
+		expect(flushed).toEqual([2, 1, 0]);
+		expect(cursor).toBe(1);
+		expect(shown).toEqual(history[cursor]);
+		expect(shown.nodes).toHaveLength(4);
+		expect(shown.edges).toHaveLength(4);
+		await Promise.all([move(1), move(1)]);
+		expect(cursor).toBe(2);
+		expect(shown).toEqual(history[cursor]);
+		await Promise.all([move(-1), move(-1), move(-1)]);
+		expect(cursor).toBe(0);
+		expect(shown).toEqual(history[cursor]);
+	});
+	it('leaves the cursor unchanged after shared-restore cancellation or rejection and accepts the next request', async () => {
+		const history = ['A', 'B', 'C'].map((name) => ({ ...pipeline(), name }));
+		let cursor = 2;
+		let shown = history[cursor];
+		const confirmation = deferred<boolean>();
+		const started = deferred<void>();
+		const targets: string[] = [];
+		const move = createHistoryRestorer({
+			flush: () => {},
+			current: () => ({ history, cursor }),
+			restore: async (snapshot) => {
+				targets.push(snapshot.name);
+				if (targets.length === 1) {
+					started.resolve();
+					if (!(await confirmation.promise)) return false;
+				}
+				if (targets.length === 2) throw new Error('shared revision conflict');
+				shown = snapshot;
+				return true;
+			},
+			setCursor: (next) => (cursor = next)
+		});
+		const cancelled = move(-1);
+		const rejected = move(-1).then(
+			() => null,
+			(error: Error) => error
+		);
+		await started.promise;
+		expect(targets).toEqual(['B']);
+		confirmation.resolve(false);
+		await cancelled;
+		expect((await rejected)?.message).toBe('shared revision conflict');
+		expect(cursor).toBe(2);
+		expect(shown).toEqual(history[2]);
+		await move(-1);
+		expect(targets).toEqual(['B', 'B', 'B']);
+		expect(cursor).toBe(1);
+		expect(shown).toEqual(history[cursor]);
 	});
 });
