@@ -61,7 +61,7 @@
 		drag = { id: e.pointerId, y: e.clientY, position: position(value) };
 	}
 	function move(e: PointerEvent) {
-		if (!drag || drag.id !== e.pointerId) return;
+		if (disabled || !drag || drag.id !== e.pointerId) return;
 		const next = clamp(drag.position + (drag.y - e.clientY) / (e.shiftKey ? 1600 : 160), 0, 1);
 		change(fromPosition(next));
 		drag = { ...drag, y: e.clientY, position: next };
@@ -73,10 +73,11 @@
 	}
 </script>
 
-<div class="nodrag nopan nowheel flex max-w-[136px] min-w-0 flex-1 items-center gap-1.5" class:opacity-40={disabled}>
+<div class="nodrag nopan nowheel flex max-w-[150px] min-w-0 flex-1 items-center gap-1.5" class:opacity-50={disabled} class:grayscale={disabled}>
 	<div
 		class="nodrag nopan nowheel size-13 shrink-0 cursor-ns-resize rounded-full text-amber-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 dark:text-amber-400 dark:focus-visible:outline-amber-400"
 		style="touch-action: none"
+		style:cursor={disabled ? 'default' : 'ns-resize'}
 		role="slider"
 		tabindex={disabled ? -1 : 0}
 		aria-label={label}
@@ -85,9 +86,11 @@
 		aria-valuemin={min}
 		aria-valuemax={max}
 		aria-valuenow={value}
-		aria-valuetext={disabled ? 'Not applicable' : `${value} ${unit}`}
+		aria-valuetext={`${value} ${unit}${disabled ? ', disabled' : ''}`}
 		aria-disabled={disabled}
-		title="{description} — Drag or use arrow keys; Shift: fine; Enter or double-click: reset"
+		title="{description} — {disabled
+			? 'Disabled while the band is off or EQ is bypassed'
+			: 'Drag or use arrow keys; Shift: fine; Enter or double-click: reset'}"
 		onpointerdown={down}
 		onpointermove={move}
 		onpointerup={end}
