@@ -94,7 +94,7 @@
 
 <Wrapper label="Mute" icon={SpeakerMute} accent="effect" hasInput hasOutput channelIo nodeId={id} bypassed={data.bypassed} onBypass={toggleBypass}>
 	<button
-		title="Toggle mute (M)"
+		title="Toggle mute"
 		class={[
 			'nodrag nopan flex w-40 items-center justify-center gap-2 rounded-lg border px-3 py-2 transition-colors',
 			data.muted ? 'border-red-500/60 bg-red-500/10' : 'border-neutral-400 bg-neutral-100 hover:bg-neutral-200'

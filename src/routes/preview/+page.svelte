@@ -35,7 +35,7 @@
 		nodes: [
 			{ id: 'preview-input', kind: 'microphone', data: { ...defaultDataFor('microphone'), deviceId: 'splitwave' }, position: { x: 0, y: 0 } },
 			{ id: 'preview-eq', kind: 'eq', data: defaultDataFor('eq'), position: { x: 320, y: 0 } },
-			{ id: 'preview-gain', kind: 'gain', data: defaultDataFor('gain'), position: { x: 760, y: 200 } },
+			{ id: 'preview-gain', kind: 'gain', data: defaultDataFor('gain'), position: { x: 0, y: 240 } },
 			{ id: 'preview-output', kind: 'speaker', data: { ...defaultDataFor('speaker'), deviceId: 'splitwave' }, position: { x: 1050, y: 0 } }
 		],
 		edges: [1, 2].map((ch) => ({

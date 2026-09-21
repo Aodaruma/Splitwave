@@ -57,7 +57,7 @@ export function guideSegments(guide: EqGuide, max: number, width: number) {
 				...range,
 				start,
 				end,
-			text: [range.label, range.short].find((text) => (end - start) * width >= text.length * 6.5 + 8) ?? '',
+				text: [range.label, range.short].find((text) => (end - start) * width >= text.length * 6.5 + 8) ?? '',
 				title: `${range.label} · ${range.low.toLocaleString('en-US')}–${range.high.toLocaleString('en-US')} Hz (approximate guide)`
 			};
 		});
