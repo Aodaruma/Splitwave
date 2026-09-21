@@ -11,6 +11,7 @@
 	import { formatHz } from '$lib/components/format';
 	import PresetsSection from './_presets_section.svelte';
 	import { audioStore } from '$lib/modules/audio/stores.svelte';
+	const updaterDisabled = import.meta.env.VITE_DISABLE_UPDATER === 'true';
 
 	const SHAPES: { value: EdgeShape; label: string; hint: string }[] = [
 		{ value: 'bezier', label: 'Bezier', hint: 'Smooth curve, the default' },
@@ -212,20 +213,26 @@
 		<section class="flex flex-col gap-2">
 			<div>
 				<h2 class="text-sm font-semibold text-theme">Updates</h2>
-				<p class="text-xs text-neutral-900">Checking from the menu always works, whatever this is set to.</p>
+				{#if updaterDisabled}
+					<p class="text-xs text-neutral-900">This custom build is updated manually to preserve your changes.</p>
+				{:else}
+					<p class="text-xs text-neutral-900">Checking from the menu always works, whatever this is set to.</p>
+				{/if}
 			</div>
 
-			<Toggle
-				checked={appSettings.checkUpdatesOnLaunch}
-				label="Check on launch"
-				hint="Looks for a new version each time the app starts."
-				onChange={() => setApp('checkUpdatesOnLaunch', !appSettings.checkUpdatesOnLaunch)} />
+			{#if !updaterDisabled}
+				<Toggle
+					checked={appSettings.checkUpdatesOnLaunch}
+					label="Check on launch"
+					hint="Looks for a new version each time the app starts."
+					onChange={() => setApp('checkUpdatesOnLaunch', !appSettings.checkUpdatesOnLaunch)} />
 
-			<Toggle
-				checked={appSettings.includePreReleases}
-				label="Receive pre-release updates (Beta / RC)"
-				hint="Download preview versions (beta, RC, alpha) with the newest features and bug fixes before general release."
-				onChange={() => setApp('includePreReleases', !appSettings.includePreReleases)} />
+				<Toggle
+					checked={appSettings.includePreReleases}
+					label="Receive pre-release updates (Beta / RC)"
+					hint="Download preview versions (beta, RC, alpha) with the newest features and bug fixes before general release."
+					onChange={() => setApp('includePreReleases', !appSettings.includePreReleases)} />
+			{/if}
 		</section>
 
 		<section class="flex flex-col gap-2">
