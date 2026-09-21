@@ -1,6 +1,8 @@
 import type { Edge, Node } from '@xyflow/svelte';
 import { createId } from '@paralleldrive/cuid2';
-import { definition, runtimeId, scopeAt, type EditorNode, type GroupDocument } from '../../pipeline/groups';
+import { definition, effectiveNodeData, runtimeId, saveNodeData, scopeAt, type EditorNode, type GroupDocument } from '../../pipeline/groups';
+import { withDefaults } from '../../pipeline/defaults';
+import type { PipelineNode } from '../../pipeline/types';
 
 export const GROUP_ACTIONS = 'splitwave:group-actions';
 export const BOUNDARY_INPUT = '$group-input';
@@ -15,7 +17,10 @@ export function groupView(doc: GroupDocument, path: string[]): { nodes: Node[]; 
 			id: id(n.id),
 			type: n.kind,
 			position: { ...n.position },
-			data: inner ? { definition: inner.id, name: inner.name, inputs: inner.inputs, outputs: inner.outputs } : { ...n.data },
+			data:
+				n.kind === 'group'
+					? { definition: inner!.id, name: inner!.name, inputs: inner!.inputs, outputs: inner!.outputs }
+					: structuredClone(withDefaults(n.kind, effectiveNodeData(doc, id(n.id), n))),
 			...('width' in n ? { width: n.width, height: n.height } : {})
 		};
 	});
@@ -63,10 +68,11 @@ export function saveGroupView(doc: GroupDocument, path: string[], nodes: Node[],
 				for (const key of Object.keys(doc.runtimeIds)) if (doc.runtimeIds[key] === generated) doc.runtimeIds[key] = n.id;
 			}
 			if (n.type === 'group') return { ...base, kind: 'group', data: { definition: String(n.data.definition) } };
+			const data = structuredClone(n.data) as PipelineNode['data'];
 			return {
 				...base,
 				kind: n.type,
-				data: { ...n.data },
+				data: original && original.kind !== 'group' && original.kind === n.type ? saveNodeData(doc, n.id, original, data) : data,
 				...(n.width != null ? { width: n.width } : {}),
 				...(n.height != null ? { height: n.height } : {})
 			} as EditorNode;

@@ -1,11 +1,38 @@
 import { PIPELINE_VERSION } from './version';
 import type { Pipeline } from './types';
-import { assertReusableInstance, capturePluginStates, definition, dependencies, documentFor, expand, materialize, type GroupDefinition } from './groups';
+import {
+	assertReusableInstance,
+	capturePluginStates,
+	definition,
+	dependencies,
+	documentFor,
+	expand,
+	materialize,
+	type GroupDefinition,
+	type GroupDocument
+} from './groups';
 
 export interface GroupLibrary {
 	version: 3;
 	pipelines: Record<string, Pipeline>;
 	definitions: Record<string, GroupDefinition>;
+}
+
+export function findGroupInstance(library: GroupLibrary, id: string): { doc: GroupDocument; path: string[] } | undefined {
+	for (const p of Object.values(library.pipelines)) {
+		if ((p.version ?? 0) > library.version) continue;
+		const doc = documentFor(p);
+		function visit(d: GroupDefinition, path: string[]): string[] | undefined {
+			if (d.id === id) return path;
+			for (const n of d.nodes)
+				if (n.kind === 'group') {
+					const found = visit(definition(doc, n.data.definition), [...path, n.id]);
+					if (found) return found;
+				}
+		}
+		const path = visit(definition(doc, doc.root), []);
+		if (path) return { doc, path };
+	}
 }
 
 export function definitionContent(d: GroupDefinition): string {
