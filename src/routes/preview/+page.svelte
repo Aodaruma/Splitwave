@@ -1,11 +1,52 @@
 <script lang="ts">
-	import { mockIPC } from '@tauri-apps/api/mocks';
+	import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 	import '$lib/modules/theme/stores';
 	import Grid from './_grid.svelte';
+	import { defaultDataFor } from '$lib/modules/flow/utils';
+	import type { Pipeline } from '$lib/modules/pipeline/types';
+	import { PIPELINE_VERSION } from '$lib/modules/pipeline/version';
+	import { Flow } from '$lib/modules/flow/ui';
+	import Header from '$lib/components/layout/header.svelte';
+	import { UndoRedo, SavedIndicator, SnapshotHistory } from '$lib/modules/flow/ui';
+	import { ActivationButton } from '$lib/modules/audio/ui';
+	import { ArrowLeft } from '$lib/components/icons';
+	let interactive = $state(false);
 
 	const SPLITWAVE_DEVICE = { id: 'splitwave', name: 'Splitwave' };
+	window.__TAURI_OS_PLUGIN_INTERNALS__ ??= {
+		platform: 'windows',
+		os_type: 'windows',
+		family: 'windows',
+		arch: 'x86_64',
+		version: '11',
+		eol: '\r\n',
+		exe_extension: 'exe'
+	};
+	mockWindows('main');
+	const demo: Pipeline = {
+		id: 'preview',
+		name: 'Editor preview',
+		createdAt: 0,
+		updatedAt: 0,
+		version: PIPELINE_VERSION,
+		nodes: [
+			{ id: 'preview-input', kind: 'microphone', data: { ...defaultDataFor('microphone'), deviceId: 'splitwave' }, position: { x: 0, y: 0 } },
+			{ id: 'preview-eq', kind: 'eq', data: defaultDataFor('eq'), position: { x: 320, y: 0 } },
+			{ id: 'preview-gain', kind: 'gain', data: defaultDataFor('gain'), position: { x: 700, y: 200 } },
+			{ id: 'preview-output', kind: 'speaker', data: { ...defaultDataFor('speaker'), deviceId: 'splitwave' }, position: { x: 1050, y: 0 } }
+		],
+		edges: [1, 2].map((ch) => ({
+			id: `preview-edge-${ch}`,
+			source: 'preview-input',
+			sourceHandle: `ch${ch}`,
+			target: 'preview-eq',
+			targetHandle: `ch${ch}`
+		}))
+	};
+	const values = new Map<string, unknown>([['pipeline:preview', demo]]);
 	mockIPC(
-		(cmd) => {
+		(cmd, args) => {
+			const payload = args as Record<string, unknown> | undefined;
 			if (cmd === 'list_input_devices') return [{ ...SPLITWAVE_DEVICE, kind: 'input' }];
 			if (cmd === 'list_output_devices') return [{ ...SPLITWAVE_DEVICE, kind: 'output' }];
 			if (cmd === 'device_info' || cmd === 'capture_device_info') return { sampleRate: 48000, channels: 2, sampleFormat: 'f32' };
@@ -14,8 +55,10 @@
 			if (cmd.startsWith('list_')) return [];
 			if (cmd === 'get_app_icons') return {};
 			if (cmd === 'is_pipeline_running') return false;
-			if (cmd === 'plugin:store|entries') return [];
-			if (cmd === 'plugin:store|get') return null;
+			if (cmd === 'plugin:store|entries') return [...values.entries()];
+			if (cmd === 'plugin:store|get') return [values.get(String(payload?.key)), values.has(String(payload?.key))];
+			if (cmd === 'plugin:store|set') values.set(String(payload?.key), payload?.value);
+			if (cmd === 'plugin:store|delete') return values.delete(String(payload?.key));
 			return undefined;
 		},
 		{ shouldMockEvents: true }
@@ -30,11 +73,23 @@
 		html.dark {
 			color-scheme: dark;
 		}
-		html,
-		body {
-			overflow: auto !important;
-		}
 	</style>
 </svelte:head>
 
-<Grid />
+{#if interactive}
+	<Header>
+		{#snippet left()}
+			<button class="button-header" onclick={() => (interactive = false)}><ArrowLeft class="size-4" /> Back</button>
+			<span class="text-[13px]">Editor preview</span>
+		{/snippet}
+		{#snippet right()}
+			<div class="flex items-center gap-2">
+				<UndoRedo /><SnapshotHistory pipelineId={demo.id} /><SavedIndicator /><ActivationButton pipelineId={demo.id} />
+			</div>
+		{/snippet}
+	</Header>
+	<div class="flex min-h-0 w-full flex-1"><Flow pipeline={demo} /></div>
+{:else}
+	<button class="button-main primary m-4 self-start" onclick={() => (interactive = true)}>Open interactive editor demo</button>
+	<div class="min-h-0 flex-1 overflow-auto"><Grid /></div>
+{/if}
