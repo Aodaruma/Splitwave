@@ -7,7 +7,7 @@
 	import { ActivationButton, LatencyBadge, PipelineRateBadge, RunningTimer } from '$lib/modules/audio/ui';
 	import Header from '$lib/components/layout/header.svelte';
 	import Flow from '$lib/modules/flow';
-	import { SnapshotHistory, SavedIndicator, UndoRedo } from '$lib/modules/flow/ui';
+	import { SnapshotHistory, SavedIndicator, UndoRedo, GridToggle } from '$lib/modules/flow/ui';
 	import { isFromFuture } from '$lib/modules/pipeline/migrations';
 	import { ArrowLeft } from '$lib/components/icons';
 
@@ -99,6 +99,15 @@
 		</div>
 	{/snippet}
 
+	{#snippet toolbar()}
+		{#if pipeline}
+			<SavedIndicator />
+			<SnapshotHistory pipelineId={pipeline.id} />
+			<UndoRedo />
+			<GridToggle />
+		{/if}
+	{/snippet}
+
 	{#snippet right()}
 		<div class="flex shrink-0 items-center gap-2">
 			{#if audioStore.isRunning}
@@ -107,9 +116,6 @@
 			{/if}
 			<PipelineRateBadge />
 			{#if pipeline}
-				<UndoRedo />
-				<SavedIndicator />
-				<SnapshotHistory pipelineId={pipeline.id} />
 				<ActivationButton pipelineId={pipeline.id} />
 			{/if}
 		</div>

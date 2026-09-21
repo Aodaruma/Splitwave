@@ -7,8 +7,9 @@
 	import { PIPELINE_VERSION } from '$lib/modules/pipeline/version';
 	import { Flow } from '$lib/modules/flow/ui';
 	import Header from '$lib/components/layout/header.svelte';
-	import { UndoRedo, SavedIndicator, SnapshotHistory } from '$lib/modules/flow/ui';
-	import { ActivationButton } from '$lib/modules/audio/ui';
+	import { UndoRedo, SavedIndicator, SnapshotHistory, GridToggle } from '$lib/modules/flow/ui';
+	import { ActivationButton, LatencyBadge, PipelineRateBadge, RunningTimer } from '$lib/modules/audio/ui';
+	import { audioStore } from '$lib/modules/audio/stores.svelte';
 	import { ArrowLeft } from '$lib/components/icons';
 	import { methods as pipelineMethods } from '$lib/modules/pipeline/methods';
 	import { pipelineStore } from '$lib/modules/pipeline/stores.svelte';
@@ -90,12 +91,35 @@
 {#if interactive}
 	<Header>
 		{#snippet left()}
-			<button class="button-header" onclick={closeDemo}><ArrowLeft class="size-4" /> Back</button>
-			<span class="text-[13px]">Editor preview</span>
+			<div class="flex min-w-36 items-center gap-2">
+				<button class="button-header" aria-label="Back to previews" title="Back to previews" onclick={closeDemo}>
+					<ArrowLeft class="size-4 shrink-0" /> Back
+				</button>
+				<div class="max-w-64 min-w-0 overflow-hidden">
+					<input
+						value={displayedDemo.name}
+						readonly
+						aria-label="Pipeline name"
+						title={displayedDemo.name}
+						class="input-base h-7 max-w-full min-w-0 rounded-md text-[13px] text-ellipsis transition-colors focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset motion-reduce:transition-none"
+						style:width="{displayedDemo.name.length + 3}ch" />
+				</div>
+			</div>
+		{/snippet}
+		{#snippet toolbar()}
+			<SavedIndicator />
+			<SnapshotHistory pipelineId={demo.id} />
+			<UndoRedo />
+			<GridToggle />
 		{/snippet}
 		{#snippet right()}
-			<div class="flex items-center gap-2">
-				<UndoRedo /><SnapshotHistory pipelineId={demo.id} /><SavedIndicator /><ActivationButton pipelineId={demo.id} />
+			<div class="flex shrink-0 items-center gap-2">
+				{#if audioStore.isRunning}
+					<RunningTimer />
+					<LatencyBadge />
+				{/if}
+				<PipelineRateBadge />
+				<ActivationButton pipelineId={demo.id} />
 			</div>
 		{/snippet}
 	</Header>
