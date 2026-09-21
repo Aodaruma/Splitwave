@@ -1,8 +1,9 @@
 export function canvasShortcut(
 	event: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey'>,
 	onCanvas: boolean
-): 'duplicate' | 'toggleGrid' | null {
-	if (!onCanvas || event.altKey) return null;
+): 'duplicate' | 'toggleGrid' | 'switchInputs' | null {
+	if (!onCanvas) return null;
+	if (event.altKey) return event.key.toLowerCase() === 's' && !event.ctrlKey && !event.metaKey && !event.shiftKey ? 'switchInputs' : null;
 	const mod = event.ctrlKey || event.metaKey;
 	if (event.key === 'Tab' && event.shiftKey && !mod) return 'toggleGrid';
 	if (event.key.toLowerCase() === 'd' && mod && !event.shiftKey) return 'duplicate';

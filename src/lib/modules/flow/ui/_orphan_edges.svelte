@@ -150,6 +150,7 @@
 			<path
 				class="orphan"
 				class:active={active === o.id}
+				data-wire-id={o.id}
 				d="M {o.from.x},{o.from.y} L {o.to.x},{o.to.y}"
 				fill="none"
 				stroke="#f59e0b"

@@ -17,6 +17,7 @@
 	import { createHistoryRestorer } from '../utils/history_restore';
 	import { planAutoConnect, type AudioPorts } from '../utils/auto_connect';
 	import { canvasShortcut } from '../utils/shortcuts';
+	import { assertRewireAcyclic, crossesWire, detachNodes, editableWire, screenPath, shakeDetector, switchInputs, type Point } from '../utils/wiring';
 	import type { NodeKind, Pipeline } from '$lib/modules/pipeline/types';
 	import { pipelineStore } from '$lib/modules/pipeline/stores.svelte';
 	import { appSettings } from '$lib/modules/settings/stores.svelte';
@@ -91,7 +92,7 @@
 	});
 	const isMac = platform() === 'macos';
 	let scrollPans = $derived(appSettings.canvasScroll === 'pan' || (appSettings.canvasScroll === 'auto' && isMac));
-	let editorElement: HTMLDivElement;
+	let editorElement: HTMLDivElement = $state()!;
 
 	let nodes = $state.raw<XyNode[]>(untrack(() => groupView(groupDocument, []).nodes));
 	let edges = $state.raw<XyEdge[]>(untrack(() => groupView(groupDocument, []).edges));
@@ -124,6 +125,7 @@
 		}
 	}
 	function navigate(path: string[]) {
+		cancelGestures();
 		try {
 			groupDocument = documentFor(getSnapshot());
 			scopeAt(groupDocument, path);
@@ -419,6 +421,216 @@
 		'input, textarea, select, button, a, [contenteditable]:not([contenteditable="false"]), [role="dialog"], [role="button"]:not(.svelte-flow__node):not(.svelte-flow__selection-wrapper), [role="slider"], [role="combobox"], .nodrag, .nopan:not(.svelte-flow__node), .svelte-flow__handle, .svelte-flow__resize-control';
 	let connectDrag = $state<{ source: string; pointerId: number; startX: number; startY: number; x: number; y: number } | null>(null);
 	let connectNotice = $state('');
+	let cutDrag = $state.raw<{ pointerId: number; points: Point[]; hits: Set<string> } | null>(null);
+	let suppressRightMenu = false;
+	let destroying = false;
+	const wireGeometry = new Map<SVGPathElement, { key: string; points: Point[] }>();
+	let dragCandidate: { pointerId: number; shake: ReturnType<typeof shakeDetector> } | null = null;
+	let nodeMotion = $state.raw<{
+		pointerId: number;
+		shake: ReturnType<typeof shakeDetector>;
+		moved: XyNode[];
+		positions: Map<string, Point>;
+		detach: boolean;
+		cancelled: boolean;
+	} | null>(null);
+
+	function wirePaths() {
+		const byId = new Map(edges.map((e) => [e.id, e]));
+		return [...editorElement.querySelectorAll<SVGPathElement>('.svelte-flow__edge-path, path[data-wire-id]')].flatMap((path) => {
+			const id = path.dataset.wireId ?? path.closest<HTMLElement>('.svelte-flow__edge')?.dataset.id;
+			const edge = id ? byId.get(id) : undefined;
+			const matrix = path.getScreenCTM();
+			if (!edge || !editableWire(edge) || edge.hidden || !matrix) return [];
+			const key = `${path.getAttribute('d')}:${matrix.a},${matrix.b},${matrix.c},${matrix.d},${matrix.e},${matrix.f}`;
+			let geometry = wireGeometry.get(path);
+			if (geometry?.key !== key) {
+				geometry = { key, points: screenPath(path, matrix) };
+				wireGeometry.set(path, geometry);
+			}
+			return [{ id: edge.id, points: geometry.points }];
+		});
+	}
+
+	function editWires(next: XyEdge[]) {
+		if (next === edges || (next.length === edges.length && next.every((e, i) => e === edges[i]))) return;
+		const previous = edges,
+			doc = structuredClone(groupDocument);
+		try {
+			const before = getSnapshot();
+			editGraph(() => {
+				edges = next;
+				const after = getSnapshot();
+				assertRewireAcyclic(before.edges, after.edges);
+				const definitions = { ...groupLibrary.definitions, ...after.groups!.definitions };
+				for (const p of Object.values(groupLibrary.pipelines))
+					if (p.id !== pipeline.id && p.groups) {
+						const prior = expand(structuredClone(p.groups));
+						const updated = expand({ ...structuredClone(p.groups), definitions });
+						assertRewireAcyclic(prior.edges, updated.edges);
+					}
+			});
+		} catch (error) {
+			flushSync(() => {
+				edges = previous;
+				groupDocument = doc;
+			});
+			audioStore.reportError(error);
+		}
+	}
+
+	function switchSelectedInputs() {
+		const selected = nodes.filter((n) => n.selected);
+		if (selected.length !== 1 || selected[0].type === 'groupBoundary') return;
+		const id = selected[0].id;
+		const next = switchInputs(audioPorts(id, 'target'), edges, audioPorts(id, 'source'));
+		connectNotice = next === edges ? 'No compatible input switch (unavailable inputs, group boundary, or an output would lose its feed).' : '';
+		editWires(next);
+	}
+
+	function cancelCut() {
+		if (!cutDrag) return;
+		const { pointerId } = cutDrag;
+		cutDrag = null;
+		wireGeometry.clear();
+		if (editorElement.hasPointerCapture(pointerId)) editorElement.releasePointerCapture(pointerId);
+	}
+
+	function onGestureMove(event: PointerEvent) {
+		onConnectMove(event);
+		if (modalManager.isOpen || chooserOpen) {
+			cancelGestures();
+			return;
+		}
+		const point = { x: event.clientX, y: event.clientY };
+		if (cutDrag?.pointerId === event.pointerId) {
+			if (!(event.buttons & 2)) {
+				cancelCut();
+				return;
+			}
+			const paths = wirePaths();
+			const samples = event.getCoalescedEvents?.() ?? [];
+			for (const sample of [...samples, event]) {
+				const next = { x: sample.clientX, y: sample.clientY };
+				const last = cutDrag.points[cutDrag.points.length - 1];
+				if (next.x === last.x && next.y === last.y) continue;
+				for (const wire of paths) if (!cutDrag.hits.has(wire.id) && crossesWire(last, next, wire.points)) cutDrag.hits.add(wire.id);
+				cutDrag.points.push(next);
+			}
+			cutDrag = { ...cutDrag };
+		}
+		if (
+			nodeMotion?.pointerId === event.pointerId &&
+			!nodeMotion.cancelled &&
+			!nodeMotion.detach &&
+			nodeMotion.shake(point, event.timeStamp, !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey)
+		) {
+			nodeMotion.detach = true;
+			connectNotice = 'Release to detach all editable connections and move. Esc cancels.';
+		}
+	}
+
+	function onGestureEnd(event: PointerEvent) {
+		if (modalManager.isOpen || chooserOpen) {
+			cancelGestures();
+			return;
+		}
+		if (cutDrag?.pointerId === event.pointerId && event.button === 2) {
+			// Include the final segment even when no pointermove was delivered before release.
+			const point = { x: event.clientX, y: event.clientY };
+			const last = cutDrag.points[cutDrag.points.length - 1];
+			if (point.x !== last.x || point.y !== last.y) for (const wire of wirePaths()) if (crossesWire(last, point, wire.points)) cutDrag.hits.add(wire.id);
+			const hits = cutDrag.hits;
+			cancelCut();
+			editWires(edges.filter((e) => !hits.has(e.id)));
+		}
+		onConnectEnd(event);
+		dragCandidate = null;
+	}
+
+	function onNodeDragStart({ nodes: moved, event }: { nodes: XyNode[]; event: MouseEvent | TouchEvent }) {
+		closeContextMenu();
+		if (!dragCandidate || !(event instanceof MouseEvent)) return;
+		flushPendingCommit();
+		captureIfChanged(getSnapshot());
+		nodeMotion = {
+			...dragCandidate,
+			moved: moved.filter((n) => n.type !== 'groupBoundary'),
+			positions: new Map(moved.map((n) => [n.id, { ...n.position }])),
+			detach: false,
+			cancelled: false
+		};
+	}
+
+	function restoreMotionPositions() {
+		if (!nodeMotion) return;
+		const positions = nodeMotion.positions;
+		nodes = nodes.map((n) => (positions.has(n.id) ? { ...n, position: positions.get(n.id)!, dragging: false } : n));
+	}
+
+	function onNodeDragStop() {
+		const motion = nodeMotion;
+		if (!motion) return;
+		if (destroying) {
+			restoreMotionPositions();
+			nodeMotion = null;
+			clearTimeout(saveTimer);
+			saveTimer = undefined;
+			return;
+		}
+		const previous = edges,
+			doc = structuredClone(groupDocument);
+		try {
+			flushSync(() => {
+				if (motion.cancelled) restoreMotionPositions();
+				else if (motion.detach) edges = detachNodes(edges, motion.moved);
+			});
+			if (!motion.cancelled) commit(getSnapshot());
+		} catch (error) {
+			flushSync(() => {
+				edges = previous;
+				groupDocument = doc;
+				restoreMotionPositions();
+			});
+			audioStore.reportError(error);
+		} finally {
+			flushSync(() => {
+				nodeMotion = null;
+			});
+			clearTimeout(saveTimer);
+			saveTimer = undefined;
+			connectNotice = '';
+		}
+	}
+
+	function cancelGestures() {
+		cancelCut();
+		cancelConnect();
+		dragCandidate = null;
+		if (nodeMotion) {
+			nodeMotion.cancelled = true;
+			// XYFlow uses d3 mouse listeners; end its drag before restoring the transaction.
+			window.dispatchEvent(new MouseEvent('mouseup', { view: window, bubbles: true }));
+			if (nodeMotion) onNodeDragStop();
+		}
+		connectNotice = '';
+	}
+
+	function onGestureCancel(event: PointerEvent) {
+		if (event.pointerId === cutDrag?.pointerId || event.pointerId === connectDrag?.pointerId || event.pointerId === nodeMotion?.pointerId) cancelGestures();
+	}
+
+	function onEditorContextMenu(event: MouseEvent) {
+		if (suppressRightMenu || cutDrag) {
+			event.preventDefault();
+			event.stopPropagation();
+		}
+	}
+
+	$effect(() => {
+		// XYFlow cancellation flushes state and must run outside the reactive update.
+		if (modalManager.isOpen || chooserOpen) queueMicrotask(cancelGestures);
+	});
 
 	function bodyNode(target: EventTarget | null): HTMLElement | null {
 		if (!(target instanceof Element) || target.closest(INTERACTIVE)) return null;
@@ -428,10 +640,27 @@
 
 	function onEditorPointerDown(event: PointerEvent) {
 		const target = event.target;
-		if (event.button !== 0 || !(target instanceof Element) || target.closest(INTERACTIVE) || modalManager.isOpen) return;
+		if (event.button === 2 && !cutDrag) suppressRightMenu = false;
+		if (!(target instanceof Element) || target.closest(INTERACTIVE) || modalManager.isOpen || chooserOpen || !event.isPrimary) return;
+		if (cutDrag || connectDrag || nodeMotion) return;
+		if (event.button === 2 && event.ctrlKey && !event.altKey && !event.metaKey) {
+			event.preventDefault();
+			event.stopPropagation();
+			editorElement.focus({ preventScroll: true });
+			closeContextMenu();
+			suppressRightMenu = true;
+			cutDrag = { pointerId: event.pointerId, points: [{ x: event.clientX, y: event.clientY }], hits: new Set() };
+			editorElement.setPointerCapture(event.pointerId);
+			return;
+		}
+		if (event.button !== 0) return;
 		editorElement.focus({ preventScroll: true });
 		const node = bodyNode(target);
-		if (!event.altKey || !node?.dataset.id || !event.isPrimary) return;
+		if (!node?.dataset.id || nodes.find((n) => n.id === node.dataset.id)?.type === 'groupBoundary') return;
+		if (!event.altKey) {
+			dragCandidate = { pointerId: event.pointerId, shake: shakeDetector({ x: event.clientX, y: event.clientY }, event.timeStamp) };
+			return;
+		}
 		event.preventDefault();
 		event.stopPropagation();
 		closeContextMenu();
@@ -865,10 +1094,12 @@
 	});
 
 	function undo() {
+		cancelGestures();
 		return restoreHistory(-1);
 	}
 
 	function redo() {
+		cancelGestures();
 		return restoreHistory(1);
 	}
 
@@ -878,6 +1109,7 @@
 		addNodeWithData,
 		getSnapshot,
 		save: () => {
+			cancelGestures();
 			clearTimeout(saveTimer);
 			saveTimer = undefined;
 			return commit(getSnapshot());
@@ -898,6 +1130,8 @@
 		nodes;
 		edges;
 		clearTimeout(saveTimer);
+		saveTimer = undefined;
+		if (nodeMotion) return;
 		saveTimer = setTimeout(() => {
 			saveTimer = undefined;
 			untrack(() => {
@@ -957,11 +1191,22 @@
 		const t = e.target as HTMLElement | null;
 		const tag = t?.tagName?.toLowerCase();
 		const inField = tag === 'input' || tag === 'textarea' || tag === 'select' || t?.isContentEditable;
-		const onCanvas = !!t && editorElement.contains(t) && !t.closest(INTERACTIVE) && !modalManager.isOpen && !contextMenu;
+		const onCanvas = !!t && editorElement.contains(t) && !t.closest(INTERACTIVE) && !modalManager.isOpen && !chooserOpen && !contextMenu;
 
 		if (e.key === 'Escape') {
-			cancelConnect();
+			const active = cutDrag || connectDrag || nodeMotion;
+			cancelGestures();
 			connectNotice = '';
+			if (active) {
+				e.preventDefault();
+				e.stopImmediatePropagation();
+				return;
+			}
+		}
+		if (onCanvas && (cutDrag || connectDrag || nodeMotion)) {
+			e.preventDefault();
+			e.stopImmediatePropagation();
+			return;
 		}
 		if (
 			onCanvas &&
@@ -996,6 +1241,7 @@
 			e.preventDefault();
 			if (!e.repeat) {
 				if (shortcut === 'toggleGrid') toggleGrid();
+				else if (shortcut === 'switchInputs') switchSelectedInputs();
 				else duplicateSelection();
 			}
 			return;
@@ -1030,6 +1276,7 @@
 	}
 
 	function onBeforeUnload() {
+		cancelGestures();
 		flushPendingCommit();
 	}
 
@@ -1047,6 +1294,8 @@
 	});
 
 	onDestroy(() => {
+		destroying = true;
+		cancelGestures();
 		flushPendingCommit();
 		clearTimeout(restartTimer);
 		// Keep runtime controls on the latest document until its save reaches the root store.
@@ -1056,20 +1305,27 @@
 	});
 </script>
 
-<svelte:window onmousedown={closeContextMenu} onpointermove={onConnectMove} onpointerup={onConnectEnd} onpointercancel={cancelConnect} onblur={cancelConnect} />
+<svelte:window
+	onmousedown={closeContextMenu}
+	onpointermove={onGestureMove}
+	onpointerup={onGestureEnd}
+	onpointercancel={onGestureCancel}
+	onblur={cancelGestures} />
 
 <div class="flex h-full w-full">
 	<div
 		bind:this={editorElement}
 		class="flow-editor relative flex-1"
 		class:connecting={connectDrag !== null}
+		class:cutting={cutDrag !== null}
 		role="region"
 		aria-label="Flow editor"
 		tabindex="-1"
 		onpointerdowncapture={onEditorPointerDown}
-		onlostpointercapture={cancelConnect}
+		onlostpointercapture={onGestureCancel}
+		oncontextmenucapture={onEditorContextMenu}
 		onmousedowncapture={(e) => {
-			if (connectDrag) {
+			if (connectDrag || cutDrag) {
 				e.preventDefault();
 				e.stopPropagation();
 			}
@@ -1112,7 +1368,8 @@
 			onedgecontextmenu={onEdgeContextMenu}
 			onpanecontextmenu={onPaneContextMenu}
 			onpaneclick={closeContextMenu}
-			onnodedragstart={closeContextMenu}
+			onnodedragstart={onNodeDragStart}
+			onnodedragstop={onNodeDragStop}
 			onselectionstart={closeContextMenu}
 			onmovestart={closeContextMenu}
 			snapGrid={appSettings.snapToGrid ? [appSettings.gridSize, appSettings.gridSize] : undefined}>
@@ -1175,6 +1432,19 @@
 					stroke-width="2"
 					stroke-dasharray="5 4" />
 			</svg>
+		{/if}
+		{#if cutDrag}
+			{@const rect = editorElement.getBoundingClientRect()}
+			<svg class="pointer-events-none absolute inset-0 z-20 h-full w-full text-red-500" aria-hidden="true">
+				<polyline
+					points={cutDrag.points.map((p) => `${p.x - rect.left},${p.y - rect.top}`).join(' ')}
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2" />
+			</svg>
+			<p role="status" class="pointer-events-none absolute top-14 right-3 z-10 rounded bg-neutral-100 p-2 text-xs text-neutral-1000">
+				Release to cut {cutDrag.hits.size} connections · Esc cancels
+			</p>
 		{/if}
 		{#if connectNotice}
 			<p
@@ -1240,6 +1510,9 @@
 		cursor: grabbing;
 	}
 	.flow-editor.connecting :global(.svelte-flow__node) {
+		cursor: crosshair;
+	}
+	.flow-editor.cutting :global(*) {
 		cursor: crosshair;
 	}
 </style>
