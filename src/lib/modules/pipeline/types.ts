@@ -133,12 +133,18 @@ export interface PipelineNode<K extends NodeKind = NodeKind> {
 	height?: number;
 }
 
+export interface EdgeLayout extends Record<string, unknown> {
+	/** Editable cable points in the owning editor scope, never runtime coordinates. */
+	reroutes?: { x: number; y: number }[];
+}
+
 export interface PipelineEdge {
 	id: string;
 	source: string;
 	sourceHandle?: string;
 	target: string;
 	targetHandle?: string;
+	data?: EdgeLayout;
 }
 
 export interface Pipeline {

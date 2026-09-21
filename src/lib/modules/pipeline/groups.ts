@@ -2,6 +2,7 @@ import { PIPELINE_VERSION } from './version';
 import { createId } from '@paralleldrive/cuid2';
 import type { Pipeline, PipelineEdge, PipelineNode } from './types';
 import { RECORDING_FORMATS } from './recording-formats';
+import { translateEdgeLayout } from '../flow/utils/layout';
 
 export interface GroupPort {
 	id: string;
@@ -166,7 +167,7 @@ export function expand(doc: GroupDocument): { nodes: PipelineNode[]; edges: Pipe
 		for (const e of d.edges) {
 			const source = endpoint(d, path, e.source, e.sourceHandle, 'outputs');
 			const target = endpoint(d, path, e.target, e.targetHandle, 'inputs');
-			const { identity: _, ...edge } = e;
+			const { identity: _, data: _layout, ...edge } = e;
 			edges.push({
 				...edge,
 				id: runtimeId(doc, path, `#${e.id}`),
@@ -226,7 +227,7 @@ export function groupSelection(doc: GroupDocument, path: string[], selected: str
 	for (const e of d.edges) {
 		const source = chosen.has(e.source),
 			target = chosen.has(e.target);
-		if (source && target) inner.edges.push(e);
+		if (source && target) inner.edges.push({ ...e, data: translateEdgeLayout(e.data, { x: 100 - position.x, y: 100 - position.y }) });
 		else
 			outer.push({
 				...e,
@@ -270,6 +271,7 @@ export function ungroup(doc: GroupDocument, path: string[], id: string) {
 	d.edges.push(
 		...inner.edges.map((e) => ({
 			...e,
+			data: translateEdgeLayout(e.data, { x: instance.position.x - 100, y: instance.position.y - 100 }),
 			id: edgeIds.get(e.id)!,
 			identity: [...(instance.identity ?? [instance.id]), ...(e.identity ?? ['#' + e.id])],
 			source: ids.get(e.source)!,

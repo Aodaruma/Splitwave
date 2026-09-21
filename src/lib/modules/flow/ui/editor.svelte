@@ -17,6 +17,9 @@
 	import { createHistoryRestorer } from '../utils/history_restore';
 	import { planAutoConnect, type AudioPorts } from '../utils/auto_connect';
 	import { canvasShortcut } from '../utils/shortcuts';
+	import { alignNodes, insertReroute, planBulkBypass, type AlignmentAxis } from '../utils/layout';
+	import { applyWireInsertion, planWireInsertion, wireHitsBounds } from '../utils/insertion';
+	import { EDGE_ACTIONS, type EdgeActions } from '../utils/edge_actions';
 	import {
 		assertRewireAcyclic,
 		assertRewireKeepsFeeds,
@@ -28,7 +31,7 @@
 		switchInputs,
 		type Point
 	} from '../utils/wiring';
-	import type { NodeKind, Pipeline } from '$lib/modules/pipeline/types';
+	import type { EdgeLayout, NodeKind, Pipeline } from '$lib/modules/pipeline/types';
 	import { pipelineStore } from '$lib/modules/pipeline/stores.svelte';
 	import { appSettings } from '$lib/modules/settings/stores.svelte';
 	import { methods as pipelineMethods } from '$lib/modules/pipeline/methods';
@@ -422,6 +425,44 @@
 		}
 	}
 
+	function alignSelection(axis?: AlignmentAxis) {
+		const positions = alignNodes(
+			nodes.map((n) => ({ ...n, measured: flow.getInternalNode(n.id)?.measured ?? n.measured })),
+			axis
+		);
+		if (!positions.size) return;
+		editGraph(() => {
+			nodes = nodes.map((n) => (positions.has(n.id) ? { ...n, position: positions.get(n.id)! } : n));
+		});
+	}
+
+	function bypassSelection() {
+		const plan = planBulkBypass(nodes, registry);
+		if (!plan.length) return;
+		editGraph(() => {
+			const patches = new Map(plan.map((p) => [p.id, p.bypassed]));
+			nodes = nodes.map((n) => (patches.has(n.id) ? { ...n, data: { ...n.data, bypassed: patches.get(n.id)! } } : n));
+		});
+		if (audioStore.isRunning && audioStore.runningPipelineId === pipeline.id)
+			for (const patch of plan) audioMethods.updateEffect(patch.id, { bypassed: patch.bypassed }).catch((error) => audioStore.reportError(error));
+	}
+
+	function convenienceMenuItems(): MenuItem[] {
+		const count = nodes.filter((n) => n.selected && n.type !== 'groupBoundary' && n.draggable !== false).length;
+		const bypass = planBulkBypass(nodes, registry);
+		return [
+			{ label: 'Align / distribute automatically', shortcut: 'Shift+=', disabled: count < 2, action: () => alignSelection() },
+			{ label: 'Align / distribute horizontally', disabled: count < 2, action: () => alignSelection('horizontal') },
+			{ label: 'Align / distribute vertically', disabled: count < 2, action: () => alignSelection('vertical') },
+			{
+				label: bypass[0]?.bypassed === false ? 'Engage selected effects' : 'Bypass selected effects',
+				shortcut: 'M',
+				disabled: !bypass.length,
+				action: bypassSelection
+			}
+		];
+	}
+
 	function toggleGrid() {
 		appSettings.snapToGrid = !appSettings.snapToGrid;
 		appSettings.persist();
@@ -432,7 +473,10 @@
 	let connectDrag = $state<{ source: string; pointerId: number; startX: number; startY: number; x: number; y: number } | null>(null);
 	let connectNotice = $state('');
 	let cutDrag = $state.raw<{ pointerId: number; points: Point[]; hits: Set<string> } | null>(null);
+	let pointMotion = $state.raw<{ pointerId: number; edgeId: string; index: number; before: XyEdge[]; start: Point; origin: Point } | null>(null);
+	let insertion = $state.raw<NonNullable<ReturnType<typeof planWireInsertion>> | null>(null);
 	let suppressRightMenu = false;
+	let deletingCablePoint = false;
 	let destroying = false;
 	const wireGeometry = new Map<SVGPathElement, { key: string; points: Point[] }>();
 	let dragCandidate: { pointerId: number; shake: ReturnType<typeof shakeDetector>; detach: boolean } | null = null;
@@ -445,9 +489,155 @@
 		cancelled: boolean;
 	} | null>(null);
 
-	function wirePaths() {
+	function editableEdge(id: string) {
+		const edge = edges.find((e) => e.id === id);
+		return !!edge && editableWire(edge);
+	}
+
+	function setCablePoints(id: string, points: Point[]) {
+		edges = edges.map((e) => (e.id === id ? { ...e, data: { ...e.data, reroutes: points } } : e));
+	}
+
+	function removeCablePoint(id: string, index: number) {
+		if (!editableEdge(id) || pointMotion || nodeMotion || cutDrag || connectDrag || modalManager.isOpen || chooserOpen) return;
+		const points = (edges.find((e) => e.id === id)?.data as EdgeLayout | undefined)?.reroutes ?? [];
+		if (!points[index]) return;
+		editGraph(() =>
+			setCablePoints(
+				id,
+				points.filter((_, i) => i !== index)
+			)
+		);
+		editorElement.focus({ preventScroll: true });
+	}
+
+	function addCablePoint(id: string, point: Point, source: Point, target: Point) {
+		if (!editableEdge(id) || pointMotion || nodeMotion || cutDrag || connectDrag || modalManager.isOpen || chooserOpen) return;
+		const points = (edges.find((e) => e.id === id)?.data as EdgeLayout | undefined)?.reroutes ?? [];
+		editGraph(() => {
+			setCablePoints(id, insertReroute(source, target, points, point));
+			edges = edges.map((e) => ({ ...e, selected: e.id === id }));
+		});
+	}
+
+	function startCablePoint(id: string, index: number, event: PointerEvent) {
+		if (
+			event.button !== 0 ||
+			!event.isPrimary ||
+			!editableEdge(id) ||
+			nodeMotion ||
+			pointMotion ||
+			cutDrag ||
+			connectDrag ||
+			modalManager.isOpen ||
+			chooserOpen
+		)
+			return;
+		event.preventDefault();
+		event.stopPropagation();
+		closeContextMenu();
+		flushPendingCommit();
+		captureIfChanged(getSnapshot());
+		const points = (edges.find((e) => e.id === id)?.data as EdgeLayout | undefined)?.reroutes ?? [];
+		if (!points[index]) return;
+		pointMotion = {
+			pointerId: event.pointerId,
+			edgeId: id,
+			index,
+			before: edges,
+			start: flow.screenToFlowPosition({ x: event.clientX, y: event.clientY }, { snapToGrid: false }),
+			origin: points[index]
+		};
+		(event.currentTarget as SVGCircleElement).focus({ preventScroll: true });
+		editorElement.setPointerCapture(event.pointerId);
+	}
+
+	function moveCablePoint(event: PointerEvent) {
+		const motion = pointMotion;
+		if (!motion || event.pointerId !== motion.pointerId) return;
+		const at = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY }, { snapToGrid: false });
+		const points = (motion.before.find((e) => e.id === motion.edgeId)!.data as EdgeLayout).reroutes!;
+		setCablePoints(
+			motion.edgeId,
+			points.map((p, i) => (i === motion.index ? { x: motion.origin.x + at.x - motion.start.x, y: motion.origin.y + at.y - motion.start.y } : p))
+		);
+	}
+
+	function finishCablePoint(cancel = false) {
+		const motion = pointMotion;
+		if (!motion) return;
+		flushSync(() => {
+			if (cancel) edges = motion.before;
+			pointMotion = null;
+		});
+		clearTimeout(saveTimer);
+		saveTimer = undefined;
+		if (editorElement.hasPointerCapture(motion.pointerId)) editorElement.releasePointerCapture(motion.pointerId);
+		if (!cancel) {
+			try {
+				commit(getSnapshot());
+			} catch (error) {
+				edges = motion.before;
+				audioStore.reportError(error);
+			}
+		}
+	}
+
+	setContext<EdgeActions>(EDGE_ACTIONS, {
+		editable: editableEdge,
+		pending: (id) => insertion?.bundle.some((e) => e.id === id) ?? false,
+		add: addCablePoint,
+		start: startCablePoint,
+		menu: (id, event, source, target, index) => {
+			if (!editableEdge(id) || pointMotion || nodeMotion || cutDrag || connectDrag || modalManager.isOpen || chooserOpen) return;
+			const point = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY }, { snapToGrid: false });
+			contextMenu = {
+				kind: 'edge',
+				edgeId: id,
+				x: event.clientX,
+				y: event.clientY,
+				items:
+					index === undefined
+						? [
+								{ label: 'Add editable cable point', action: () => addCablePoint(id, point, source, target) },
+								{ label: 'Delete cable', danger: true, action: () => editWires(edges.filter((e) => e.id !== id)) }
+							]
+						: [{ label: 'Remove cable point', shortcut: 'Delete', action: () => removeCablePoint(id, index) }]
+			};
+		}
+	});
+
+	function updateInsertion() {
+		insertion = null;
+		const motion = nodeMotion;
+		if (!motion || motion.cancelled || motion.detach || motion.moved.length !== 1) return;
+		const node = nodes.find((n) => n.id === motion.moved[0].id);
+		if (!node) return;
+		const internal = flow.getInternalNode(node.id);
+		const size = internal?.measured;
+		if (!size?.width || !size.height) return;
+		const position = internal!.internals.positionAbsolute;
+		const a = flow.flowToScreenPosition(position);
+		const b = flow.flowToScreenPosition({ x: position.x + size.width, y: position.y + size.height });
+		const paths = wirePaths(false);
+		const hits = paths.filter((w) => wireHitsBounds(w.points, { ...a, width: b.x - a.x, height: b.y - a.y })).map((w) => w.id);
+		insertion = planWireInsertion(
+			node,
+			registry[node.type as NodeKind]?.category,
+			audioPorts(node.id, 'target'),
+			audioPorts(node.id, 'source'),
+			nodes,
+			edges,
+			hits
+		);
+		if (insertion?.bundle.some((e) => !paths.some((p) => p.id === e.id))) insertion = null;
+		connectNotice = insertion ? 'Release to insert into the highlighted channel bundle. Esc cancels.' : '';
+	}
+
+	function wirePaths(includeOrphans = true) {
 		const byId = new Map(edges.map((e) => [e.id, e]));
-		return [...editorElement.querySelectorAll<SVGPathElement>('.svelte-flow__edge-path, path[data-wire-id]')].flatMap((path) => {
+		const selector = includeOrphans ? '.svelte-flow__edge-path, path[data-wire-id]' : '.svelte-flow__edge-path';
+		return [...editorElement.querySelectorAll<SVGPathElement>(selector)].flatMap((path) => {
 			const id = path.dataset.wireId ?? path.closest<HTMLElement>('.svelte-flow__edge')?.dataset.id;
 			const edge = id ? byId.get(id) : undefined;
 			const matrix = path.getScreenCTM();
@@ -514,6 +704,10 @@
 			cancelGestures();
 			return;
 		}
+		if (pointMotion?.pointerId === event.pointerId) {
+			if (!(event.buttons & 1)) finishCablePoint(true);
+			else moveCablePoint(event);
+		}
 		const point = { x: event.clientX, y: event.clientY };
 		if (cutDrag?.pointerId === event.pointerId) {
 			if (!(event.buttons & 2)) {
@@ -538,6 +732,7 @@
 			nodeMotion.shake(point, event.timeStamp, !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey)
 		) {
 			nodeMotion.detach = true;
+			insertion = null;
 			connectNotice = 'Release to detach all editable connections and move. Esc cancels.';
 		}
 	}
@@ -546,6 +741,10 @@
 		if (modalManager.isOpen || chooserOpen) {
 			cancelGestures();
 			return;
+		}
+		if (pointMotion?.pointerId === event.pointerId && event.button === 0) {
+			moveCablePoint(event);
+			finishCablePoint();
 		}
 		if (cutDrag?.pointerId === event.pointerId && event.button === 2) {
 			// Include the final segment even when no pointermove was delivered before release.
@@ -593,9 +792,22 @@
 		const previous = edges,
 			doc = structuredClone(groupDocument);
 		try {
+			updateInsertion();
+			const before = getSnapshot();
 			flushSync(() => {
 				if (motion.cancelled) restoreMotionPositions();
 				else if (motion.detach) edges = detachNodes(edges, motion.moved);
+				else if (insertion) {
+					const ids = insertion.connections.map(() => createId());
+					ids.forEach((id) => seenEdgeIds.add(id));
+					edges = applyWireInsertion(edges, motion.moved[0].id, insertion, ids);
+					const after = getSnapshot();
+					assertRewireAcyclic(before.edges, after.edges);
+					const definitions = { ...groupLibrary.definitions, ...after.groups!.definitions };
+					for (const p of Object.values(groupLibrary.pipelines))
+						if (p.id !== pipeline.id && p.groups)
+							assertRewireAcyclic(expand(structuredClone(p.groups)).edges, expand({ ...structuredClone(p.groups), definitions }).edges);
+				}
 			});
 			if (!motion.cancelled) commit(getSnapshot());
 		} catch (error) {
@@ -608,14 +820,18 @@
 		} finally {
 			flushSync(() => {
 				nodeMotion = null;
+				insertion = null;
 			});
 			clearTimeout(saveTimer);
 			saveTimer = undefined;
 			connectNotice = '';
+			wireGeometry.clear();
 		}
 	}
 
 	function cancelGestures() {
+		finishCablePoint(true);
+		insertion = null;
 		cancelCut();
 		cancelConnect();
 		dragCandidate = null;
@@ -629,7 +845,13 @@
 	}
 
 	function onGestureCancel(event: PointerEvent) {
-		if (event.pointerId === cutDrag?.pointerId || event.pointerId === connectDrag?.pointerId || event.pointerId === nodeMotion?.pointerId) cancelGestures();
+		if (
+			event.pointerId === cutDrag?.pointerId ||
+			event.pointerId === connectDrag?.pointerId ||
+			event.pointerId === nodeMotion?.pointerId ||
+			event.pointerId === pointMotion?.pointerId
+		)
+			cancelGestures();
 	}
 
 	function onEditorContextMenu(event: MouseEvent) {
@@ -654,7 +876,7 @@
 		const target = event.target;
 		if (event.button === 2 && !cutDrag) suppressRightMenu = false;
 		if (!(target instanceof Element) || target.closest(INTERACTIVE) || modalManager.isOpen || chooserOpen || !event.isPrimary) return;
-		if (cutDrag || connectDrag || nodeMotion) return;
+		if (cutDrag || connectDrag || nodeMotion || pointMotion) return;
 		if (event.button === 2 && event.ctrlKey && !event.altKey && !event.metaKey) {
 			event.preventDefault();
 			event.stopPropagation();
@@ -752,7 +974,7 @@
 	}
 
 	function nodeMenuItems(node: XyNode): MenuItem[] {
-		const items: MenuItem[] = [];
+		const items: MenuItem[] = convenienceMenuItems();
 		const id = node.id;
 		const data = (node.data ?? {}) as Record<string, unknown>;
 		const kind = node.type as NodeKind | 'group' | undefined;
@@ -895,6 +1117,7 @@
 
 	function paneMenuItems(flowX: number, flowY: number): MenuItem[] {
 		return [
+			...convenienceMenuItems(),
 			{
 				label: 'Paste',
 				icon: ClipboardPaste,
@@ -1153,7 +1376,7 @@
 		edges;
 		clearTimeout(saveTimer);
 		saveTimer = undefined;
-		if (nodeMotion) return;
+		if (nodeMotion || pointMotion) return;
 		saveTimer = setTimeout(() => {
 			saveTimer = undefined;
 			untrack(() => {
@@ -1210,13 +1433,20 @@
 	// Backspace, so we explicitly accept Delete too and swallow the default
 	// navigation in case the press lands outside the flow.
 	function onWindowKeyDown(e: KeyboardEvent) {
+		// A held Delete must not reach XYFlow after removing the focused point.
+		if (deletingCablePoint && (e.key === 'Delete' || e.key === 'Backspace')) {
+			e.preventDefault();
+			e.stopImmediatePropagation();
+			return;
+		}
 		const t = e.target as HTMLElement | null;
 		const tag = t?.tagName?.toLowerCase();
 		const inField = tag === 'input' || tag === 'textarea' || tag === 'select' || t?.isContentEditable;
 		const onCanvas = !!t && editorElement.contains(t) && !t.closest(INTERACTIVE) && !modalManager.isOpen && !chooserOpen && !contextMenu;
 
 		if (e.key === 'Escape') {
-			const active = cutDrag || connectDrag || nodeMotion;
+			const active = cutDrag || connectDrag || nodeMotion || pointMotion || contextMenu;
+			closeContextMenu();
 			cancelGestures();
 			connectNotice = '';
 			if (active) {
@@ -1225,7 +1455,7 @@
 				return;
 			}
 		}
-		if (onCanvas && (cutDrag || connectDrag || nodeMotion)) {
+		if ((onCanvas || !!pointMotion) && (cutDrag || connectDrag || nodeMotion || pointMotion)) {
 			e.preventDefault();
 			e.stopImmediatePropagation();
 			return;
@@ -1258,12 +1488,23 @@
 				}
 			}
 		}
+		const cablePoint = t?.closest<SVGCircleElement>('[data-reroute-point]');
+		if (cablePoint && editorElement.contains(cablePoint) && (e.key === 'Delete' || e.key === 'Backspace')) {
+			deletingCablePoint = true;
+			e.preventDefault();
+			e.stopImmediatePropagation();
+			if (!e.repeat && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && !modalManager.isOpen && !chooserOpen && !contextMenu)
+				removeCablePoint(cablePoint.dataset.rerouteEdge!, Number(cablePoint.dataset.reroutePoint));
+			return;
+		}
 		const shortcut = canvasShortcut(e, onCanvas && !connectDrag && !e.defaultPrevented);
 		if (shortcut) {
 			e.preventDefault();
 			if (!e.repeat) {
 				if (shortcut === 'toggleGrid') toggleGrid();
 				else if (shortcut === 'switchInputs') switchSelectedInputs();
+				else if (shortcut === 'align') alignSelection();
+				else if (shortcut === 'bypass') bypassSelection();
 				else duplicateSelection();
 			}
 			return;
@@ -1332,7 +1573,13 @@
 	onpointermove={onGestureMove}
 	onpointerup={onGestureEnd}
 	onpointercancel={onGestureCancel}
-	onblur={cancelGestures} />
+	onblur={() => {
+		deletingCablePoint = false;
+		cancelGestures();
+	}}
+	onkeyup={(event) => {
+		if (event.key === 'Delete' || event.key === 'Backspace') deletingCablePoint = false;
+	}} />
 
 <div class="flex h-full w-full">
 	<div
@@ -1390,6 +1637,7 @@
 			onedgecontextmenu={onEdgeContextMenu}
 			onpanecontextmenu={onPaneContextMenu}
 			onpaneclick={closeContextMenu}
+			onnodedrag={updateInsertion}
 			onnodedragstart={onNodeDragStart}
 			onnodedragstop={onNodeDragStop}
 			onselectionstart={closeContextMenu}
@@ -1435,14 +1683,6 @@
 				</div>
 			</div>
 		{/if}
-		<button
-			type="button"
-			class="absolute top-3 right-3 z-10 rounded-lg border border-neutral-400 bg-neutral-100 px-3 py-1.5 text-xs text-neutral-1000 shadow-sm"
-			aria-pressed={appSettings.snapToGrid}
-			title="Snap to grid (Shift+Tab on canvas)"
-			onclick={toggleGrid}>
-			Grid {appSettings.snapToGrid ? `ON · ${appSettings.gridSize}` : 'OFF'}
-		</button>
 		{#if connectDrag}
 			<svg class="pointer-events-none absolute inset-0 z-20 h-full w-full" aria-hidden="true">
 				<line

@@ -1,5 +1,5 @@
 import { methods } from './methods';
-import type { NodeKind, Pipeline } from './types';
+import type { EdgeLayout, NodeKind, Pipeline } from './types';
 import type { GroupDocument } from './groups';
 
 export type ClipboardNode = {
@@ -18,6 +18,7 @@ export type ClipboardEdge = {
 	target: number;
 	sourceHandle?: string;
 	targetHandle?: string;
+	data?: EdgeLayout;
 };
 
 export type ClipboardEntry = {

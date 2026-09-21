@@ -24,7 +24,7 @@ export function groupView(doc: GroupDocument, path: string[]): { nodes: Node[]; 
 			...('width' in n ? { width: n.width, height: n.height } : {})
 		};
 	});
-	const edges: Edge[] = d.edges.map((e) => ({ ...e, source: id(e.source), target: id(e.target), type: 'channel' }));
+	const edges: Edge[] = d.edges.map((e) => ({ ...structuredClone(e), source: id(e.source), target: id(e.target), type: 'channel' }));
 	if (path.length) {
 		for (const [side, boundary, type, x] of [
 			['inputs', BOUNDARY_INPUT, 'source', -200],
@@ -85,6 +85,7 @@ export function saveGroupView(doc: GroupDocument, path: string[], nodes: Node[],
 			source: local(e.source),
 			target: local(e.target),
 			sourceHandle: e.sourceHandle ?? undefined,
-			targetHandle: e.targetHandle ?? undefined
+			targetHandle: e.targetHandle ?? undefined,
+			data: e.data ? structuredClone(e.data) : undefined
 		}));
 }

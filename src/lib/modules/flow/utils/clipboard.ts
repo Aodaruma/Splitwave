@@ -1,6 +1,7 @@
 import type { Edge, Node, XYPosition } from '@xyflow/svelte';
 import type { ClipboardEntry } from '../../pipeline/stores.svelte';
 import type { NodeKind } from '../../pipeline/types';
+import { translateEdgeLayout } from './layout';
 
 export function copyGraph(nodes: Node[], edges: Edge[]): ClipboardEntry | null {
 	if (!nodes.length) return null;
@@ -22,7 +23,15 @@ export function copyGraph(nodes: Node[], edges: Edge[]): ClipboardEntry | null {
 			if (source === undefined || target === undefined) return [];
 			// WebRTC outputs belong to a live session, not the copied node.
 			if (e.sourceHandle?.startsWith('peer:') || (nodes[source].type === 'webRtcCollaborator' && e.sourceHandle === 'mixed')) return [];
-			return [{ source, target, sourceHandle: e.sourceHandle ?? undefined, targetHandle: e.targetHandle ?? undefined }];
+			return [
+				{
+					source,
+					target,
+					sourceHandle: e.sourceHandle ?? undefined,
+					targetHandle: e.targetHandle ?? undefined,
+					data: translateEdgeLayout(e.data, { x: -origin.x, y: -origin.y })
+				}
+			];
 		})
 	};
 }
@@ -67,7 +76,8 @@ export function pasteGraph(
 			source: nodeIds[e.source],
 			sourceHandle: e.sourceHandle,
 			target: nodeIds[e.target],
-			targetHandle: e.targetHandle
+			targetHandle: e.targetHandle,
+			data: translateEdgeLayout(e.data, origin)
 		}))
 	};
 }
