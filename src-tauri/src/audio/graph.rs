@@ -963,6 +963,7 @@ impl GraphSpec {
 
         let inputs = resolve_inputs(&nodes, &keep, &routed)?;
         let outputs = resolve_outputs(&nodes, &keep, &routed)?;
+        validate_recording_destinations(&outputs)?;
         let effects = resolve_effects(&nodes, &keep)?;
 
         let edges: Vec<ValidEdge> = edges
@@ -1226,6 +1227,36 @@ fn resolve_outputs(
     Ok(result)
 }
 
+fn validate_recording_destinations(outputs: &[ValidOutput]) -> AppResult<()> {
+    let mut owners = HashMap::new();
+    for output in outputs {
+        let OutputSpec::FileRecording { file_path, .. } = &output.spec else {
+            continue;
+        };
+        let absolute = std::path::absolute(file_path)
+            .map_err(|e| AppError::Validation(format!("Invalid recording path: {e}")))?;
+        // Resolve an existing file or its parent without opening a writer.
+        let resolved = absolute.canonicalize().unwrap_or_else(|_| {
+            absolute
+                .parent()
+                .and_then(|parent| parent.canonicalize().ok())
+                .zip(absolute.file_name())
+                .map(|(parent, name)| parent.join(name))
+                .unwrap_or_else(|| absolute.clone())
+        });
+        #[cfg(target_os = "windows")]
+        let key = resolved.to_string_lossy().to_lowercase();
+        #[cfg(not(target_os = "windows"))]
+        let key = resolved;
+        if let Some(previous) = owners.insert(key, &output.id) {
+            return Err(AppError::Validation(format!(
+                "Recording nodes {previous} and {} use the same file. Choose separate recording destinations; make a linked group independent first if needed.", output.id
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn resolve_effects(nodes: &[RoleNode<'_>], keep: &HashSet<&str>) -> AppResult<Vec<ValidEffect>> {
     let mut result = Vec::new();
     for n in nodes {
@@ -1381,6 +1412,54 @@ fn check_acyclic(nodes: &[RoleNode<'_>], outgoing: &HashMap<&str, Vec<&str>>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_recording_destinations_are_rejected_before_opening_files() {
+        let dir = std::env::temp_dir();
+        let first = dir.join(format!(
+            "splitwave-destination-test-{}.wav",
+            std::process::id()
+        ));
+        let recording = |id: &str, path: &std::path::Path| {
+            node(
+                id,
+                NodeKind::FileRecording,
+                serde_json::json!({
+                    "filePath": path.to_string_lossy(), "mode": "overwrite", "format": { "kind": "wav", "bitDepth": "f32" }, "channels": 2
+                }),
+            )
+        };
+        let graph = |path: &std::path::Path| GraphSpec {
+            nodes: vec![
+                mic("mic"),
+                recording("original", &first),
+                recording("linked", path),
+            ],
+            edges: vec![
+                edge("a", "mic", Some("ch1"), "original", Some("ch1")),
+                edge("b", "mic", Some("ch1"), "linked", Some("ch1")),
+            ],
+            sample_rate: None,
+        };
+        for alias in [&first, &dir.join(".").join(first.file_name().unwrap())] {
+            let error = graph(alias).validate().unwrap_err().to_string();
+            assert!(error.contains("same file"), "{error}");
+        }
+        #[cfg(target_os = "windows")]
+        assert!(graph(std::path::Path::new(
+            &first.to_string_lossy().to_uppercase()
+        ))
+        .validate()
+        .is_err());
+        assert_eq!(
+            graph(&first.with_extension("second.wav"))
+                .validate()
+                .unwrap()
+                .outputs
+                .len(),
+            2
+        );
+    }
 
     fn node(id: &str, kind: NodeKind, data: serde_json::Value) -> NodeSpec {
         NodeSpec {

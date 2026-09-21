@@ -20,7 +20,7 @@ export interface GroupLibrary {
 
 export function findGroupInstance(library: GroupLibrary, id: string): { doc: GroupDocument; path: string[] } | undefined {
 	for (const p of Object.values(library.pipelines)) {
-		if ((p.version ?? 0) > library.version) continue;
+		if ((p.version ?? 0) > PIPELINE_VERSION) continue;
 		const doc = documentFor(p);
 		function visit(d: GroupDefinition, path: string[]): string[] | undefined {
 			if (d.id === id) return path;
