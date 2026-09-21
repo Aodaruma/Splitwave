@@ -11,6 +11,8 @@ export interface AudioPorts {
 	id: string;
 	handles: { id: string | null; y: number }[];
 	channels?: ChannelPortConfig;
+	/** Stable group port IDs, in display order, with their underlying audio handles. */
+	ordered?: { id: string; handle: string | null }[];
 }
 
 export function createsCycle(source: string, target: string, edges: Pick<Edge, 'source' | 'target'>[]): boolean {
@@ -36,6 +38,7 @@ function channelNumber(id: string | null): number | null {
 }
 
 function sourceHandles(source: AudioPorts, edges: Edge[]): (string | null)[] {
+	if (source.ordered) return source.ordered.filter((p) => channelNumber(p.handle) !== null || isMainBus(p.handle, true)).map((p) => p.id);
 	const config = source.channels;
 	if (config) {
 		const incoming = edges.filter((e) => e.target === source.id).map((e) => e.targetHandle ?? '');
@@ -56,14 +59,26 @@ function sourceHandles(source: AudioPorts, edges: Edge[]): (string | null)[] {
 	return main ? [main.id] : [];
 }
 
+function isMainBus(handle: string | null, output = false): boolean {
+	return handle === null || handle === 'main' || (output && handle === 'mixed');
+}
+
 export function planAutoConnect(source: AudioPorts, target: AudioPorts, edges: Edge[]): Connection[] {
 	if (createsCycle(source.id, target.id, edges)) return [];
 	const inputs = [...target.handles].sort((a, b) => a.y - b.y);
 	const planned: Connection[] = [];
+	const matched = new Set<string>();
 	for (const sourceHandle of sourceHandles(source, edges)) {
-		const ch = channelNumber(sourceHandle);
+		const port = source.ordered?.find((p) => p.id === sourceHandle);
+		const ch = channelNumber(port ? port.handle : sourceHandle);
 		let targetHandle: string | null | undefined;
-		if (ch !== null) {
+		if (target.ordered) {
+			const candidate = target.ordered.find((p) => !matched.has(p.id) && (ch !== null ? channelNumber(p.handle) === ch : isMainBus(p.handle)));
+			if (candidate) {
+				targetHandle = candidate.id;
+				matched.add(candidate.id);
+			}
+		} else if (ch !== null) {
 			if (target.channels) {
 				if (ch <= target.channels.max) targetHandle = `ch${ch}`;
 			} else {

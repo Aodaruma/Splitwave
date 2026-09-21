@@ -108,6 +108,62 @@ describe('copy and duplicate graphs', () => {
 });
 
 describe('automatic audio connections', () => {
+	it('matches reordered group ports by channel and then display order without crossing L/R', () => {
+		const source: AudioPorts = {
+			id: 'group-out',
+			handles: [],
+			ordered: [
+				{ id: 'first-left', handle: 'L' },
+				{ id: 'right', handle: 'ch2' },
+				{ id: 'second-left', handle: 'ch1' }
+			]
+		};
+		const target: AudioPorts = {
+			id: 'group-in',
+			handles: [],
+			ordered: [
+				{ id: 'right-input', handle: 'R' },
+				{ id: 'left-input', handle: 'ch1' },
+				{ id: 'other-left', handle: 'L' }
+			]
+		};
+		const planned = planAutoConnect(source, target, []);
+		expect(planned.map((e) => [e.sourceHandle, e.targetHandle])).toEqual([
+			['first-left', 'left-input'],
+			['right', 'right-input'],
+			['second-left', 'other-left']
+		]);
+		expect(
+			planAutoConnect(
+				source,
+				target,
+				planned.map((e, i) => ({ ...e, id: String(i) }))
+			)
+		).toEqual([]);
+	});
+
+	it('keeps null group buses distinct from sidechains, peer routes and individual channels', () => {
+		const source: AudioPorts = {
+			id: 'group-out',
+			handles: [],
+			ordered: [
+				{ id: 'peer', handle: 'peer:p:0' },
+				{ id: 'audio', handle: null }
+			]
+		};
+		const target: AudioPorts = {
+			id: 'group-in',
+			handles: [],
+			ordered: [
+				{ id: 'key', handle: 'sidechain' },
+				{ id: 'left', handle: 'ch1' },
+				{ id: 'audio-input', handle: null }
+			]
+		};
+		expect(planAutoConnect(source, target, []).map((e) => [e.sourceHandle, e.targetHandle])).toEqual([['audio', 'audio-input']]);
+		expect(planAutoConnect(source, growing('channels'), [])).toEqual([]);
+	});
+
 	it('connects stereo as L to L and R to R, including target sockets that have not rendered', () => {
 		expect(planAutoConnect(fixed('source', ['ch1', 'ch2']), growing('target'), [])).toEqual([
 			{ source: 'source', sourceHandle: 'ch1', target: 'target', targetHandle: 'ch1' },
