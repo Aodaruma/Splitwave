@@ -52,6 +52,8 @@ bun run format   # Prettier (.prettierrc) + rustfmt (rustfmt.toml)
 
 Required before opening a PR — see [CONTRIBUTING.md](../CONTRIBUTING.md#keep-the-diff-to-the-change).
 
+For a locally customized build, set `VITE_DISABLE_UPDATER=true` while building to prevent the upstream updater from replacing your changes. Use a Tauri configuration override with `bundle.createUpdaterArtifacts: false` when building an unsigned local installer. Normal builds keep the existing updater behavior.
+
 ## Project layout
 
 ```

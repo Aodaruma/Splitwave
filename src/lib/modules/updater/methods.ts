@@ -78,6 +78,12 @@ async function resolveUpdateEndpoint(): Promise<string | null> {
 }
 
 export async function checkForUpdates(silent = false): Promise<void> {
+	if (import.meta.env.VITE_DISABLE_UPDATER === 'true') {
+		updaterStore.state = silent
+			? { phase: 'idle' }
+			: { phase: 'unsupported', message: 'Automatic updates are disabled for this custom build. Install a newer custom build to keep your changes.' };
+		return;
+	}
 	updaterStore.state = { phase: 'checking' };
 	let endpoint: string | null = null;
 	try {
@@ -152,6 +158,7 @@ async function diagnoseError(e: unknown, endpoint?: string | null): Promise<stri
 }
 
 export async function installUpdate(): Promise<void> {
+	if (import.meta.env.VITE_DISABLE_UPDATER === 'true') return;
 	const s = updaterStore.state;
 	if (s.phase !== 'available') return;
 	const update = s.update;
