@@ -1921,6 +1921,189 @@ pub(super) fn inputs_feeding_output<'a>(output_id: &str, valid: &'a ValidGraph) 
 mod tests {
     use super::{add_mapped, crossfade_into, DelayLine, DSP_BLOCK_FRAMES, SPLICE_FADE_FRAMES};
 
+    mod eq_validation {
+        use super::super::*;
+        use crate::audio::graph::{GraphSpec, ValidEdge, ValidOutput};
+        use crate::audio::pipeline::ActivePipeline;
+
+        fn recording_spec(default_rate: u32) -> GraphSpec {
+            serde_json::from_value(serde_json::json!({
+                "sample_rate": default_rate,
+                "nodes": [
+                    {"id":"file", "kind":"audioFile", "data":{"filePath":"eq-input.wav"}},
+                    {"id":"eq", "kind":"eq", "data":{}},
+                    {"id":"recording", "kind":"fileRecording", "data":{
+                        "filePath":std::env::temp_dir().join("splitwave-eq-rate-test.wav"),
+                        "mode":"overwrite", "sampleRate":48000
+                    }}
+                ],
+                "edges": [
+                    {"id":"in", "source":"file", "target":"eq"},
+                    {"id":"out", "source":"eq", "target":"recording"}
+                ]
+            }))
+            .unwrap()
+        }
+
+        fn build(
+            valid: &ValidGraph,
+            output: &str,
+            rate: u32,
+            registry: &mut EffectRegistry,
+            cuts: HashMap<String, (Consumer<f32>, u32, usize)>,
+        ) -> AppResult<BuiltOutputGraph> {
+            build_output_graph(
+                Some(output),
+                rate,
+                false,
+                valid,
+                &HashMap::from([("file".into(), 48000)]),
+                &HashMap::from([("file".into(), 4)]),
+                &mut Vec::new(),
+                registry,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                cuts,
+            )
+        }
+
+        #[test]
+        fn recording_uses_actual_eq_rate_and_rejects_invalid_legacy_rates() {
+            let mut spec = recording_spec(16000);
+            let valid = spec.validate().unwrap();
+            assert_eq!(valid.sample_rate, 16000);
+            assert!(matches!(
+                valid.outputs[0].spec,
+                OutputSpec::FileRecording {
+                    sample_rate: Some(48000),
+                    ..
+                }
+            ));
+            let mut registry = EffectRegistry::new();
+            let built = build(&valid, "recording", 48000, &mut registry, HashMap::new()).unwrap();
+            assert_eq!(built.graph.sample_rate, 48000);
+            let mut pipeline = ActivePipeline::new();
+            pipeline.effect_controls.extend(built.controls);
+            assert_eq!(
+                pipeline
+                    .update_effect("eq", &serde_json::json!({}))
+                    .unwrap(),
+                Some(48000)
+            );
+            assert!(pipeline
+                .update_effect("eq", &serde_json::json!({"gainsDb":vec![19;10]}))
+                .is_err());
+
+            spec.sample_rate = Some(48000);
+            let valid = spec.validate().unwrap();
+            for rate in [8000, 16000, 22050, 22628] {
+                let error = build(&valid, "recording", rate, &mut registry, HashMap::new())
+                    .err()
+                    .expect("actual legacy rate must be rejected even with cached controls");
+                assert!(error.to_string().contains("Nyquist"), "{error}");
+            }
+            for rate in [22629, 24000, 96000] {
+                assert!(build(&valid, "recording", rate, &mut registry, HashMap::new()).is_ok());
+            }
+            spec.nodes[1].data = serde_json::json!({"gainsDb":vec![19;10]});
+            assert!(spec.validate().is_err());
+        }
+
+        #[test]
+        fn shared_eq_keeps_owner_rate_and_updates_all_channel_pairs() {
+            let mut valid = recording_spec(16000).validate().unwrap();
+            valid.outputs.push(ValidOutput {
+                id: "speaker".into(),
+                spec: OutputSpec::Speaker {
+                    device_id: "unused".into(),
+                },
+            });
+            valid.edges.push(ValidEdge {
+                from: "eq".into(),
+                to: "speaker".into(),
+                source_handle: None,
+                target_handle: None,
+                kind: EdgeKind::Main,
+            });
+            let plan = plan_cuts(&valid, None);
+            assert_eq!(plan.owner["eq"], "recording");
+            assert_eq!(plan.consumers["eq"], ["speaker"]);
+            let mut registry = EffectRegistry::new();
+            let mut owner =
+                build(&valid, "recording", 48000, &mut registry, HashMap::new()).unwrap();
+            let (producer, consumer) = RingBuffer::new(48000 * 4);
+            let (index, width) = owner.node_meta["eq"];
+            assert_eq!(width, 4);
+            owner.graph.attach_tap(index, producer);
+            let consumer = build(
+                &valid,
+                "speaker",
+                16000,
+                &mut registry,
+                HashMap::from([("eq".into(), (consumer, 48000, width))]),
+            )
+            .unwrap();
+            assert!(consumer.controls.is_empty());
+            assert!(consumer.node_meta.is_empty());
+            assert_eq!(consumer.sources[0].native_sr, 48000);
+            let mut pipeline = ActivePipeline::new();
+            pipeline.effect_controls.extend(owner.controls);
+            assert_eq!(
+                pipeline
+                    .update_effect("eq", &serde_json::json!({"gainsDb":vec![6;10]}))
+                    .unwrap(),
+                Some(48000)
+            );
+
+            let DagNode::Effect(eq) = &mut owner.graph.nodes[index] else {
+                panic!("missing EQ");
+            };
+            assert_eq!(eq.effects.len(), 2);
+            let mut first = [0.01; DSP_BLOCK_FRAMES * 2];
+            let mut second = first;
+            eq.effects[0].process_with_sidechain(&mut first, None, DSP_BLOCK_FRAMES);
+            eq.effects[1].process_with_sidechain(&mut second, None, DSP_BLOCK_FRAMES);
+            assert_eq!(first, second);
+            assert!(first[first.len() - 1] > 0.015);
+        }
+
+        #[test]
+        fn live_eq_updates_validate_the_running_mode_at_its_actual_rate() {
+            let mut spec = recording_spec(48000);
+            spec.nodes[1].data = serde_json::json!({"mode":"parametric"});
+            let valid = spec.validate().unwrap();
+            let built = build(
+                &valid,
+                "recording",
+                8000,
+                &mut EffectRegistry::new(),
+                HashMap::new(),
+            )
+            .unwrap();
+            let mut pipeline = ActivePipeline::new();
+            pipeline.effect_controls.extend(built.controls);
+            assert_eq!(
+                pipeline
+                    .update_effect("eq", &serde_json::json!({}))
+                    .unwrap(),
+                Some(8000)
+            );
+            let error = pipeline
+                .update_effect("eq", &serde_json::json!({"mode":"graphic"}))
+                .unwrap_err();
+            assert!(error.to_string().contains("Nyquist"));
+            let bands = serde_json::json!({"bands":vec![serde_json::json!({
+                "frequency":20000,"gainDb":0,"q":12,"filter":"bell","enabled":true
+            });8]});
+            assert_eq!(pipeline.update_effect("eq", &bands).unwrap(), Some(8000));
+            let mut invalid = bands;
+            invalid["bands"][0]["q"] = serde_json::json!(0);
+            assert!(pipeline.update_effect("eq", &invalid).is_err());
+        }
+    }
+
     // Latency compensation on a branch that bypasses a latent effect must be a
     // pure delay: same samples, same order, only shifted.
     #[test]

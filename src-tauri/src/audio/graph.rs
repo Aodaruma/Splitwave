@@ -428,7 +428,7 @@ pub fn default_eq_bands() -> [EqBand; 8] {
 }
 
 impl EqData {
-    pub fn validate(&self, sample_rate: u32) -> Result<(), String> {
+    pub fn validate_parameters(&self) -> Result<(), String> {
         if self
             .gains_db
             .iter()
@@ -450,6 +450,11 @@ impl EqData {
                 );
             }
         }
+        Ok(())
+    }
+
+    pub fn validate(&self, sample_rate: u32) -> Result<(), String> {
+        self.validate_parameters()?;
         if self.mode == EqMode::Graphic && sample_rate <= 22628 {
             return Err("Legacy graphic EQ requires a sample rate above 22628 Hz (highest crossover must be below Nyquist); select Parametric for lower rates".into());
         }
@@ -987,7 +992,7 @@ impl GraphSpec {
 
         for effect in &effects {
             if let EffectSpec::Eq(data) = &effect.spec {
-                data.validate(sample_rate).map_err(AppError::Validation)?;
+                data.validate_parameters().map_err(AppError::Validation)?;
             }
         }
         Ok(ValidGraph {

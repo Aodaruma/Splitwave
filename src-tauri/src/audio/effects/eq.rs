@@ -119,7 +119,7 @@ impl EqControls {
                     gains_db: [0.0; 10],
                     bypassed: false,
                 };
-                if d.validate(48000).is_ok() {
+                if d.validate_parameters().is_ok() {
                     for (slots, b) in self.bands.iter().zip(bands) {
                         for (slot, value) in slots.iter().zip(Self::values(b)) {
                             slot.store(value, Ordering::Relaxed);
@@ -200,17 +200,56 @@ pub fn parametric_coefficients(b: EqBand, sample_rate: u32) -> Biquad<f64> {
     Biquad::normalized(num, den)
 }
 
+#[derive(Clone, Copy)]
+struct ParametricBand {
+    filter: Biquad<f64>,
+    x: [f64; 2],
+    y: [f64; 2],
+}
+
+impl ParametricBand {
+    fn new(filter: Biquad<f64>) -> Self {
+        Self {
+            filter,
+            x: [0.0; 2],
+            y: [0.0; 2],
+        }
+    }
+
+    #[inline]
+    fn process(&mut self, x: f64) -> f64 {
+        let y = self.filter.process_f64(x);
+        self.x = [x, self.x[0]];
+        self.y = [y, self.y[0]];
+        y
+    }
+}
+
 struct Parametric {
-    chains: [[[Biquad<f64>; 8]; 2]; 2],
+    chains: [[[ParametricBand; 8]; 2]; 2],
     active: usize,
     target: [EqBand; 8],
     remaining: usize,
     fade_frames: usize,
 }
 
+fn can_preserve_history(old: Biquad<f64>, new: Biquad<f64>, from: EqBand, to: EqBand) -> bool {
+    // DC/Nyquist denominator margins and damping detect even tiny pole moves near an endpoint.
+    from.filter == to.filter
+        && from.enabled == to.enabled
+        && (from.gain_db - to.gain_db).abs() <= 0.5
+        && [
+            (1.0 + old.a1 + old.a2, 1.0 + new.a1 + new.a2),
+            (1.0 - old.a1 + old.a2, 1.0 - new.a1 + new.a2),
+            (1.0 - old.a2, 1.0 - new.a2),
+        ]
+        .iter()
+        .all(|&(a, b)| (a - b).abs() <= 0.1 * a.min(b))
+}
+
 impl Parametric {
     fn new(bands: [EqBand; 8], sr: u32) -> Self {
-        let chain = bands.map(|b| parametric_coefficients(b, sr));
+        let chain = bands.map(|b| ParametricBand::new(parametric_coefficients(b, sr)));
         Self {
             chains: [[chain; 2]; 2],
             active: 0,
@@ -224,12 +263,24 @@ impl Parametric {
         // Finish each 20 ms fade before consuming the latest target; drags cannot restart it.
         if self.remaining == 0 && bands != self.target {
             let coefficients = bands.map(|b| parametric_coefficients(b, sr));
+            let preserve: [bool; 8] = std::array::from_fn(|i| {
+                can_preserve_history(
+                    self.chains[self.active][0][i].filter,
+                    coefficients[i],
+                    self.target[i],
+                    bands[i],
+                )
+            });
             for ch in 0..2 {
                 for i in 0..8 {
-                    self.chains[1 - self.active][ch][i] = if bands[i] == self.target[i] {
-                        self.chains[self.active][ch][i]
+                    self.chains[1 - self.active][ch][i] = if preserve[i] {
+                        let mut band = self.chains[self.active][ch][i];
+                        if bands[i] != self.target[i] {
+                            band.filter.retune(coefficients[i], band.x, band.y);
+                        }
+                        band
                     } else {
-                        coefficients[i]
+                        ParametricBand::new(coefficients[i])
                     };
                 }
             }
@@ -242,7 +293,7 @@ impl Parametric {
         let mix = 1.0 - self.remaining as f64 / self.fade_frames as f64;
         for (ch, sample) in frame.iter_mut().enumerate() {
             let run =
-                |chain: &mut [Biquad<f64>; 8], x| chain.iter_mut().fold(x, |x, b| b.process_f64(x));
+                |chain: &mut [ParametricBand; 8], x| chain.iter_mut().fold(x, |x, b| b.process(x));
             let a = run(&mut self.chains[self.active][ch], *sample as f64);
             *sample = if self.remaining > 0 {
                 let b = run(&mut self.chains[1 - self.active][ch], *sample as f64);
@@ -324,6 +375,19 @@ mod tests {
             gains_db: [0.0; 10],
             bypassed: false,
         }
+    }
+
+    fn band_update(bands: [EqBand; 8]) -> serde_json::Value {
+        serde_json::json!({"bands": bands.map(|b| serde_json::json!({
+            "frequency": b.frequency, "q": b.q, "gainDb": b.gain_db, "enabled": b.enabled,
+            "filter": match b.filter {
+                EqFilter::Bell => "bell",
+                EqFilter::LowShelf => "lowShelf",
+                EqFilter::HighShelf => "highShelf",
+                EqFilter::LowCut => "lowCut",
+                EqFilter::HighCut => "highCut",
+            }
+        }))})
     }
 
     fn tone_db(mut d: EqData, freq: f32, sr: u32) -> f32 {
@@ -538,6 +602,239 @@ mod tests {
         let before = e.controls.load_bands();
         c.apply_update(&serde_json::json!({"bands":[]}));
         assert_eq!(e.controls.load_bands(), before);
+    }
+
+    #[test]
+    fn tiny_gain_drag_preserves_settled_low_frequency_resonance() {
+        let mut d = data();
+        d.bands[0].frequency = 40.0;
+        d.bands[0].q = 12.0;
+        d.bands[0].gain_db = 18.0;
+        let (mut e, control) = EqEffect::new(d, 48000);
+        let tone =
+            |n: usize| (2.0 * std::f64::consts::PI * 40.0 * n as f64 / 48000.0).sin() as f32 * 0.01;
+        for n in 0..144000 {
+            let x = tone(n);
+            e.process(&mut [x, -x], 1);
+        }
+        d.bands[0].gain_db = 17.9;
+        control.apply_update(&band_update(d.bands));
+        let mut energy = 0.0_f64;
+        let mut input = 0.0_f64;
+        for n in 0..2400 {
+            let x = tone(n);
+            let mut frame = [x, -x];
+            e.process(&mut frame, 1);
+            assert_eq!(frame[0], -frame[1]);
+            if n >= 1200 {
+                energy += (frame[0] as f64).powi(2);
+                input += (x as f64).powi(2);
+            }
+        }
+        let db = 10.0 * (energy / input).log10();
+        eprintln!("40 Hz / Q12 gain drag, 25–50 ms: {db:.6} dB (target 17.9 dB)");
+        assert!((db - 17.9).abs() < 0.15, "25–50 ms level: {db} dB");
+        for n in 2400..144000 {
+            let x = tone(n);
+            let mut frame = [x, -x];
+            e.process(&mut frame, 1);
+            if n >= 142800 {
+                assert!((frame[0] - x * db_to_linear(17.9)).abs() < 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn small_retunes_keep_history_across_rates_and_filter_bounds() {
+        for sr in [8000, 48000, 384000] {
+            let mut minimum = 1.0_f64;
+            let mut maximum = 1.0_f64;
+            for filter in [
+                EqFilter::Bell,
+                EqFilter::LowShelf,
+                EqFilter::HighShelf,
+                EqFilter::LowCut,
+                EqFilter::HighCut,
+            ] {
+                for frequency in [20.0, 40.0, 1000.0, (sr as f32 * 0.49).min(20000.0)] {
+                    for q in [0.1, 12.0] {
+                        for gain_db in [-18.0, 18.0] {
+                            let from = EqBand {
+                                filter,
+                                frequency,
+                                q,
+                                gain_db,
+                                enabled: true,
+                            };
+                            let to = EqBand {
+                                frequency: (frequency * 1.02).min(20000.0),
+                                q: if q == 12.0 { q / 1.02 } else { q * 1.02 },
+                                gain_db: gain_db - gain_db.signum() * 0.5,
+                                ..from
+                            };
+                            let old = parametric_coefficients(from, sr);
+                            let new = parametric_coefficients(to, sr);
+                            assert!(
+                                can_preserve_history(old, new, from, to),
+                                "{from:?} -> {to:?} at {sr}"
+                            );
+                            let mut old = [ParametricBand::new(old); 2];
+                            let mut new = [ParametricBand::new(new); 2];
+                            let tone = |n: usize| {
+                                let (s, c) =
+                                    (2.0 * std::f64::consts::PI * frequency as f64 * n as f64
+                                        / sr as f64)
+                                        .sin_cos();
+                                [s as f32 * 0.01, c as f32 * 0.01]
+                            };
+                            for n in 0..sr as usize * 3 {
+                                for (ch, x) in tone(n).into_iter().enumerate() {
+                                    old[ch].process(x as f64);
+                                    new[ch].process(x as f64);
+                                }
+                            }
+                            let mut bands = default_eq_bands();
+                            bands[0] = from;
+                            let mut e = Parametric::new(bands, sr);
+                            for ch in 0..2 {
+                                e.chains[e.active][ch][0] = old[ch];
+                            }
+                            bands[0] = to;
+                            e.update(bands, sr);
+                            for n in 0..sr as usize / 4 {
+                                let mut frame = tone(sr as usize * 3 + n);
+                                let mut before = [0.0; 2];
+                                let mut after = [0.0; 2];
+                                for ch in 0..2 {
+                                    before[ch] = old[ch].process(frame[ch] as f64);
+                                    after[ch] = new[ch].process(frame[ch] as f64);
+                                }
+                                e.process(&mut frame);
+                                let level = (frame[0] as f64).hypot(frame[1] as f64);
+                                let before = before[0].hypot(before[1]);
+                                let after = after[0].hypot(after[1]);
+                                minimum = minimum.min(level / before.min(after));
+                                maximum = maximum.max(level / before.max(after));
+                                assert!(level >= 0.85 * before.min(after) && level <= 1.15 * before.max(after),
+                                    "{from:?} -> {to:?} at {sr}, frame {n}: {level} vs {before}/{after}");
+                            }
+                        }
+                    }
+                }
+            }
+            eprintln!("nearby retunes at {sr} Hz: envelope {minimum:.6}..{maximum:.6} relative to settled endpoints");
+        }
+        let from = EqBand {
+            frequency: 3920.0,
+            ..data().bands[0]
+        };
+        let to = EqBand {
+            frequency: 3880.0,
+            ..from
+        };
+        // A 1% frequency change this close to Nyquist moves the endpoint margin by over 2x.
+        assert!(!can_preserve_history(
+            parametric_coefficients(from, 8000),
+            parametric_coefficients(to, 8000),
+            from,
+            to
+        ));
+    }
+
+    #[test]
+    fn large_retunes_do_not_amplify_inherited_state_into_impulses() {
+        let from = EqBand {
+            frequency: 40.0,
+            gain_db: 18.0,
+            q: 12.0,
+            ..data().bands[0]
+        };
+        let changes = [
+            EqBand {
+                frequency: 20000.0,
+                ..from
+            },
+            EqBand { q: 0.1, ..from },
+            EqBand {
+                gain_db: -18.0,
+                ..from
+            },
+            EqBand {
+                filter: EqFilter::LowShelf,
+                ..from
+            },
+            EqBand {
+                filter: EqFilter::HighShelf,
+                ..from
+            },
+            EqBand {
+                filter: EqFilter::LowCut,
+                ..from
+            },
+            EqBand {
+                filter: EqFilter::HighCut,
+                ..from
+            },
+            EqBand {
+                enabled: false,
+                ..from
+            },
+        ];
+        let high_cut = EqBand {
+            frequency: 20000.0,
+            filter: EqFilter::HighCut,
+            ..from
+        };
+        let low_cut = EqBand {
+            frequency: 20.0,
+            ..high_cut
+        };
+        for sr in [8000, 48000, 384000] {
+            let mut worst_peak = 0.0_f32;
+            for (from, to) in changes
+                .into_iter()
+                .flat_map(|to| [(from, to), (to, from)])
+                .chain([(high_cut, low_cut), (low_cut, high_cut)])
+            {
+                let mut bands = default_eq_bands();
+                bands[0] = from;
+                let mut e = Parametric::new(bands, sr);
+                let frequency = from.frequency.min(sr as f32 * 0.49) as f64;
+                let tone = |n: usize| {
+                    let (s, c) =
+                        (2.0 * std::f64::consts::PI * frequency * n as f64 / sr as f64).sin_cos();
+                    [s as f32 * 0.01, c as f32 * 0.01]
+                };
+                for n in 0..sr as usize * 3 {
+                    e.process(&mut tone(n));
+                }
+                let mut unchanged = tone(sr as usize * 3);
+                for (ch, x) in unchanged.iter_mut().enumerate() {
+                    *x = e.chains[e.active][ch].iter_mut().fold(*x as f64, |x, b| {
+                        let mut copy = *b;
+                        copy.process(x)
+                    }) as f32;
+                }
+                bands[0] = to;
+                e.update(bands, sr);
+                let mut peak = 0.0_f32;
+                for n in 0..sr as usize / 4 {
+                    let mut frame = tone(sr as usize * 3 + n);
+                    e.process(&mut frame);
+                    if n == 0 {
+                        assert_eq!(frame, unchanged);
+                    }
+                    for x in frame {
+                        assert!(x.is_finite());
+                        peak = peak.max(x.abs());
+                    }
+                }
+                // Q=12 cutoff resonance reaches 0.12; allow 25% transient headroom.
+                assert!(peak < 0.15, "{from:?} -> {to:?} at {sr}: peak {peak}");
+                worst_peak = worst_peak.max(peak);
+            }
+            eprintln!("large retunes at {sr} Hz: peak {worst_peak:.6} (input 0.01)");
+        }
     }
 
     #[test]

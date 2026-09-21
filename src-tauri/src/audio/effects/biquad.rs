@@ -32,6 +32,13 @@ impl Biquad<f64> {
         self.z2 = self.b2 * x - self.a2 * y;
         y
     }
+
+    pub(super) fn retune(&mut self, c: Self, x: [f64; 2], y: [f64; 2]) {
+        *self = c;
+        // DF-I histories map to the new DF-II delay coordinates without erasing resonance.
+        self.z1 = c.b1 * x[0] + c.b2 * x[1] - c.a1 * y[0] - c.a2 * y[1];
+        self.z2 = c.b2 * x[0] - c.a2 * y[0];
+    }
 }
 
 impl Biquad {
