@@ -101,9 +101,11 @@
 					class={[
 						'nodrag nopan flex h-4 items-center rounded border px-1.5 font-mono text-[9px] transition-colors',
 						bypassed
-							? 'border-amber-500 bg-amber-100 text-amber-900 hover:bg-amber-200'
-							: 'border-neutral-400 bg-neutral-100 text-neutral-900 hover:bg-neutral-200'
+							? 'border-neutral-400 bg-neutral-100 text-neutral-900 hover:bg-neutral-200'
+							: 'border-amber-500 bg-amber-100 text-amber-900 hover:bg-amber-200'
 					]}
+					aria-label="Enable {label}"
+					aria-pressed={!bypassed}
 					title={bypassed ? 'Bypassed -- click to engage' : 'Engaged -- click to bypass'}
 					onclick={onBypass}>
 					{bypassed ? 'BYP' : 'ON'}
@@ -117,7 +119,7 @@
 		{#if chExpanded && nodeId && hasInput}
 			<ChannelHandles {nodeId} side="target" max={maxChannels} min={minChannels} />
 		{/if}
-		<div class={['min-w-0 flex-1', bypassed && 'opacity-40']}>
+		<div class={['min-w-0 flex-1', bypassed && 'opacity-40 grayscale']} inert={bypassed === true}>
 			{@render children?.()}
 		</div>
 		{#if chExpanded && nodeId && hasOutput}
