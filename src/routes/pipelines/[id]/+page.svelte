@@ -8,7 +8,6 @@
 	import Header from '$lib/components/layout/header.svelte';
 	import Flow from '$lib/modules/flow';
 	import { SnapshotHistory, SavedIndicator, UndoRedo } from '$lib/modules/flow/ui';
-	import { Toaster } from 'svelte-french-toast';
 	import { isFromFuture } from '$lib/modules/pipeline/migrations';
 	import { ArrowLeft } from '$lib/components/icons';
 
@@ -70,14 +69,6 @@
 		nameWidth = Math.max(MIN_NAME_WIDTH_PX, width + NAME_EXTRA_PX);
 	});
 </script>
-
-<Toaster
-	position="bottom-end"
-	containerClassName="mr-72"
-	toastOptions={{
-		duration: 5000,
-		className: 'bg-neutral-200! rounded-xl! text-neutral-900! px-3!'
-	}} />
 
 <Header>
 	{#snippet left()}

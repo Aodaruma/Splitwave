@@ -59,6 +59,25 @@ pub struct Unsupported {
     pub capability: &'static str,
 }
 
+/// Older callers omit both fields; a partial identity must never authorize capture.
+#[derive(Default)]
+pub struct StateCaptureTarget {
+    pub path: Option<String>,
+    pub plugin_id: Option<String>,
+}
+
+impl StateCaptureTarget {
+    pub fn matches(&self, path: &str, plugin_id: &str) -> bool {
+        match (&self.path, &self.plugin_id) {
+            (None, None) => true,
+            (Some(expected_path), Some(expected_id)) => {
+                expected_path == path && expected_id == plugin_id
+            }
+            _ => false,
+        }
+    }
+}
+
 pub struct ActivateRequest<'a> {
     pub node_id: &'a str,
     pub path: &'a str,
@@ -319,7 +338,11 @@ pub trait PluginHost: Sync {
     fn params(&self, node_id: &str) -> Vec<PluginParamInfo>;
 
     /// Serialized instance state for project persistence.
-    fn save_state(&self, node_id: &str) -> Result<Option<String>, Unsupported>;
+    fn save_state(
+        &self,
+        node_id: &str,
+        expected: StateCaptureTarget,
+    ) -> Result<Option<String>, Unsupported>;
 
     /// Tells the plugin's own editor that the host moved a parameter behind
     /// its back, so its display follows. Called off the RT thread. `value` is
@@ -360,6 +383,24 @@ pub trait PluginHost: Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn state_capture_requires_both_identity_fields_or_a_legacy_caller() {
+        for (path, plugin_id, matches) in [
+            (None, None, true),
+            (Some("bundle"), Some("effect"), true),
+            (Some("other"), Some("effect"), false),
+            (Some("bundle"), Some("other"), false),
+            (Some("bundle"), None, false),
+            (None, Some("effect"), false),
+        ] {
+            let target = StateCaptureTarget {
+                path: path.map(str::to_string),
+                plugin_id: plugin_id.map(str::to_string),
+            };
+            assert_eq!(target.matches("bundle", "effect"), matches);
+        }
+    }
 
     /// State tagging is what stops one plugin's blob reaching another's parser.
     /// Every format relies on it, so it is tested once here rather than thrice.

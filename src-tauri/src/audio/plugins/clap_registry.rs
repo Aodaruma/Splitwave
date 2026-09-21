@@ -14,7 +14,7 @@ use std::time::Instant;
 use super::clap_host::{Bundles, ClapInstance};
 use super::host_api::{
     alive_flag, take_dead, ActivateRequest, AliveFlag, EditorSize, Graveyard, HostedNode,
-    PluginHost, PluginParamInfo, PluginStatus, Unsupported,
+    PluginHost, PluginParamInfo, PluginStatus, StateCaptureTarget, Unsupported,
 };
 use super::{editor, main_thread, ParamRing, PluginFormat};
 
@@ -150,8 +150,18 @@ impl PluginHost for ClapHost {
         with_slot(node_id, |slot| slot.instance.params()).unwrap_or_default()
     }
 
-    fn save_state(&self, node_id: &str) -> Result<Option<String>, Unsupported> {
-        Ok(with_slot(node_id, |slot| slot.instance.save_state()).flatten())
+    fn save_state(
+        &self,
+        node_id: &str,
+        expected: StateCaptureTarget,
+    ) -> Result<Option<String>, Unsupported> {
+        Ok(with_slot(node_id, move |slot| {
+            if !expected.matches(slot.instance.path(), slot.instance.plugin_id()) {
+                return None;
+            }
+            slot.instance.save_state()
+        })
+        .flatten())
     }
 
     // CLAP parameter changes ride in the process call as events, so the plugin

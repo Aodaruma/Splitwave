@@ -35,10 +35,10 @@ use objc2_core_foundation::CFRetained;
 
 use crate::audio::effects::Effect;
 
-use super::au_backend::{find_component, parse_component_url};
+use super::au_backend::{find_component, fourcc_str, parse_component_url};
 use super::host_api::{
     alive_flag, ActivateRequest, AliveFlag, EditorSize, Graveyard, HostedNode, PluginHost,
-    PluginParamInfo, PluginStatus, Unsupported,
+    PluginParamInfo, PluginStatus, StateCaptureTarget, Unsupported,
 };
 use super::param_ring::MAX_PARAM_CHANGES_PER_BLOCK;
 use super::ParamRing;
@@ -474,16 +474,10 @@ fn forget(node_id: &str) {
 /// Serializes a unit's settings the way every AU host does: the class-info
 /// property is a CFPropertyList, flattened to a binary plist and base64'd so it
 /// can live in the node's JSON alongside CLAP's blob.
-fn save_class_info(node_id: &str) -> Option<Vec<u8>> {
+fn save_class_info(node_id: &str, instance: &AuInstance) -> Option<Vec<u8>> {
     use objc2_core_foundation::{
         CFData, CFPropertyList, CFPropertyListCreateData, CFPropertyListFormat, CFRange,
     };
-
-    let instance = instances()
-        .lock()
-        .unwrap()
-        .get(node_id)
-        .map(|s| s.instance.clone())?;
 
     let mut plist: *const CFPropertyList = ptr::null();
     let mut size = size_of::<*const CFPropertyList>() as u32;
@@ -1301,7 +1295,7 @@ mod tests {
         unsafe { AudioUnitSetParameter(unit, GAIN, kAudioUnitScope_Global, 0, -12.0, 0) };
 
         let saved = AuHost
-            .save_state("st")
+            .save_state("st", StateCaptureTarget::default())
             .expect("au supports state")
             .expect("unit produced state");
         drop(node);
@@ -1390,11 +1384,21 @@ impl PluginHost for AuHost {
         get_params(node_id)
     }
 
-    fn save_state(&self, node_id: &str) -> Result<Option<String>, Unsupported> {
-        let url = loaded_path(node_id);
-        Ok(url
-            .zip(save_class_info(node_id))
-            .map(|(url, bytes)| super::host_api::encode_state(&url, &bytes)))
+    fn save_state(
+        &self,
+        node_id: &str,
+        expected: StateCaptureTarget,
+    ) -> Result<Option<String>, Unsupported> {
+        let instance = instances().lock().unwrap().get(node_id).and_then(|slot| {
+            let desc = parse_component_url(&slot.instance.url)?;
+            expected
+                .matches(&slot.instance.url, &fourcc_str(desc.componentSubType))
+                .then(|| slot.instance.clone())
+        });
+        Ok(instance.and_then(|instance| {
+            save_class_info(node_id, &instance)
+                .map(|bytes| super::host_api::encode_state(&instance.url, &bytes))
+        }))
     }
 
     /// The value is already in the unit; this only tells listeners to redraw.
