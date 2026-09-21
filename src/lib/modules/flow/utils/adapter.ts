@@ -20,7 +20,8 @@ export function toXyEdges(edges: PipelineEdge[]): XyEdge[] {
 		source: e.source,
 		sourceHandle: e.sourceHandle,
 		target: e.target,
-		targetHandle: e.targetHandle
+		targetHandle: e.targetHandle,
+		data: e.data ? structuredClone(e.data) : undefined
 	}));
 }
 
@@ -47,6 +48,7 @@ export function fromXyEdges(xyEdges: XyEdge[]): PipelineEdge[] {
 		source: e.source,
 		sourceHandle: e.sourceHandle ?? undefined,
 		target: e.target,
-		targetHandle: e.targetHandle ?? undefined
+		targetHandle: e.targetHandle ?? undefined,
+		data: e.data ? structuredClone(e.data) : undefined
 	}));
 }
