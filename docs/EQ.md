@@ -1,15 +1,18 @@
 # EQ controls
 
-EQ is one effect node with two explicitly selected algorithms. New nodes and the preview start with eight enabled, flat Bell bands in Parametric mode. Each band supports Bell, low/high shelf, and second-order low/high cut (12 dB/octave), with frequency, gain, Q, and enable controls inline.
+New EQ nodes use eight fixed shapes: low cut, low shelf, four Bell bands, high shelf, and high cut. Cuts and shelves start disabled; the four Bell bands start enabled at 0 dB, producing a flat response. Filter shapes are shown as icons; each band has frequency, applicable gain, Q, and enable controls inline. Cuts use 12 dB/octave slopes.
 
-Drag a numbered point horizontally for logarithmic frequency and vertically for gain. Select a band to edit the circular knobs or numeric inputs. Shift makes pointer and arrow-key adjustments finer. Arrow keys move a point; Home or double-click resets its frequency, gain and Q. Knob arrows adjust the value, Enter or double-click resets it, and Home/End select its bounds. Cut filters retain their saved gain but do not use it; the gain control is disabled. Q controls shelf/cut resonance as well as Bell bandwidth. Controls capture pointers and isolate canvas drag, pan, wheel and keyboard interactions.
+Drag a numbered point horizontally for logarithmic frequency and vertically for gain. Select a band to edit the circular knobs or numeric inputs. Shift makes pointer and arrow-key adjustments finer. Arrow keys move a point; Home or double-click resets its frequency, gain and Q. Knob arrows adjust the value, Enter or double-click resets it, and Home/End select its bounds. Cut filters retain their saved gain but do not use it; their gain control is hidden. Q controls shelf/cut resonance as well as Bell bandwidth. Disabled bands are gray and remain selectable, but their parameters cannot be edited until enabled. Effect bypass disables the parameter area. Controls isolate canvas drag, pan, wheel and keyboard interactions.
+
+Minor frequency ticks and adaptive labels share the points' logarithmic axis. Default and Voice guide strips show approximate listening ranges on that axis. The guide selection is saved with the node as editor data and does not change the response.
 
 ## Compatibility
 
 - `NodeKind::Eq` remains unchanged. Missing `mode` means `graphic`, in Rust, pipeline loading and preset loading. `gainsDb[10]` always means the original sequential LR4 crossover gains, never parametric peaks.
 - Pipeline schema 3 adds explicit legacy mode and the inactive parametric defaults. Older builds with future-version protection will not open these pipelines. Existing factory and user EQ presets retain the graphic algorithm; old EQ presets are not discarded merely for lacking a preset version. Preset recall preserves the node's bypass state.
-- Graphic mode uses fixed graph points and a gain knob, with frequency and Q disabled. Its steady-state audio, including the original phase interaction, is preserved. The displayed response includes that phase; zero graphic gains do not imply a magnitude-flat ten-band sum.
-- Both parameter sets are saved. Switching mode recalls the other set and explicitly changes the algorithm and sound; it is not an equivalent conversion. Applying a preset recalls its mode and parameter sets.
+- Legacy graphic mode uses fixed graph points and a gain knob. Its steady-state audio, including the original phase interaction, is preserved. The displayed response includes that phase; zero graphic gains do not imply a magnitude-flat ten-band sum.
+- Saved arbitrary parametric shapes also remain unchanged, including original defaults when fields are absent. Compatibility views display the saved shapes without a shape or mode selector. Applying an existing preset recalls its original algorithm and parameters. Both parameter sets remain saved.
+- The explicit "Initialize Channel EQ" action resets the curve to the fixed eight-band defaults; it is not an equivalent sound conversion. Undo restores the previous settings.
 
 ## DSP and limits
 
