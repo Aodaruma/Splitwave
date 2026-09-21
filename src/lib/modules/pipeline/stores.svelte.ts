@@ -44,13 +44,16 @@ class PipelineStore {
 	clipboard = $state<ClipboardEntry | null>(null);
 	/** Wall-clock millis of the last successful auto-save. `0` before any. */
 	lastSavedAt = $state<number>(0);
+	private pendingSave: Promise<void> = Promise.resolve();
 
 	async refresh(): Promise<void> {
 		this.pipelines = await methods.list();
 	}
 
 	async save(p: Pipeline): Promise<void> {
-		await methods.save(p);
+		const save = this.pendingSave.then(() => methods.save(p));
+		this.pendingSave = save.catch(() => {});
+		await save;
 		this.lastSavedAt = Date.now();
 		await this.refresh();
 	}

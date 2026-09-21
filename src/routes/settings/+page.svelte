@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { enable as enableAutostart, disable as disableAutostart } from '@tauri-apps/plugin-autostart';
 	import { onMount } from 'svelte';
 	import Header from '$lib/components/layout/header.svelte';
 	import HeaderNav from '$lib/components/layout/header_nav.svelte';
@@ -11,6 +10,7 @@
 	import NumberStepper from '$lib/components/number_stepper.svelte';
 	import { formatHz } from '$lib/components/format';
 	import PresetsSection from './_presets_section.svelte';
+	import { audioStore } from '$lib/modules/audio/stores.svelte';
 
 	const SHAPES: { value: EdgeShape; label: string; hint: string }[] = [
 		{ value: 'bezier', label: 'Bezier', hint: 'Smooth curve, the default' },
@@ -38,7 +38,7 @@
 	function resetAll() {
 		edgeSettings.reset();
 		appSettings.reset();
-		void disableAutostart();
+		void appSettings.setLaunchOnStartup(false).catch((error) => audioStore.reportError(error));
 	}
 
 	let customRateSelected = $state(false);
@@ -53,6 +53,8 @@
 			| 'confirmOverwriteChanges'
 			| 'keepRunningOnDisconnect'
 			| 'pipelineSampleRate'
+			| 'closeToTray'
+			| 'startInTray'
 	>(key: K, value: (typeof appSettings)[K]) {
 		appSettings[key] = value;
 		appSettings.persist();
@@ -60,15 +62,9 @@
 
 	async function setLaunchOnStartup(value: boolean): Promise<void> {
 		try {
-			if (value) {
-				await enableAutostart();
-			} else {
-				await disableAutostart();
-			}
-			appSettings.launchOnStartup = value;
-			appSettings.persist();
-		} catch {
-			// Leave the mirror unchanged so the toggle reflects the real (unchanged) OS state.
+			await appSettings.setLaunchOnStartup(value);
+		} catch (error) {
+			audioStore.reportError(error);
 		}
 	}
 
@@ -309,6 +305,16 @@
 				label="Launch on system startup"
 				hint="Starts Splitwave automatically when you log in."
 				onChange={() => setLaunchOnStartup(!appSettings.launchOnStartup)} />
+			<Toggle
+				checked={appSettings.startInTray}
+				label="Start in system tray"
+				hint="Hide the main window after a successful launch. Open it again from the tray icon."
+				onChange={() => setApp('startInTray', !appSettings.startInTray)} />
+			<Toggle
+				checked={appSettings.closeToTray}
+				label="Close to system tray"
+				hint="Keep audio running when the window is closed. Use Quit Splitwave in the tray menu to exit."
+				onChange={() => setApp('closeToTray', !appSettings.closeToTray)} />
 		</section>
 
 		<PresetsSection />

@@ -1,5 +1,5 @@
 import { browser } from '$app/environment';
-import { isEnabled } from '@tauri-apps/plugin-autostart';
+import { isEnabled, enable, disable } from '@tauri-apps/plugin-autostart';
 
 const KEY = 'app:settings';
 
@@ -10,6 +10,8 @@ interface Stored {
 	snapToGrid: boolean;
 	gridSize: number;
 	launchOnStartup: boolean;
+	closeToTray: boolean;
+	startInTray: boolean;
 	confirmOverwriteChanges: boolean;
 	keepRunningOnDisconnect: boolean;
 	pipelineSampleRate: number;
@@ -22,6 +24,8 @@ const DEFAULTS: Stored = {
 	snapToGrid: false,
 	gridSize: 20,
 	launchOnStartup: false,
+	closeToTray: false,
+	startInTray: false,
 	confirmOverwriteChanges: true,
 	keepRunningOnDisconnect: true,
 	pipelineSampleRate: 48_000
@@ -48,6 +52,8 @@ class AppSettings {
 	snapToGrid = $state(this.#initial.snapToGrid);
 	gridSize = $state(this.#initial.gridSize);
 	launchOnStartup = $state(this.#initial.launchOnStartup);
+	closeToTray = $state(this.#initial.closeToTray);
+	startInTray = $state(this.#initial.startInTray);
 	confirmOverwriteChanges = $state(this.#initial.confirmOverwriteChanges);
 	keepRunningOnDisconnect = $state(this.#initial.keepRunningOnDisconnect);
 	pipelineSampleRate = $state(this.#initial.pipelineSampleRate ?? 48_000);
@@ -61,6 +67,8 @@ class AppSettings {
 			snapToGrid,
 			gridSize,
 			launchOnStartup,
+			closeToTray,
+			startInTray,
 			confirmOverwriteChanges,
 			keepRunningOnDisconnect,
 			pipelineSampleRate
@@ -74,6 +82,8 @@ class AppSettings {
 				snapToGrid,
 				gridSize,
 				launchOnStartup,
+				closeToTray,
+				startInTray,
 				confirmOverwriteChanges,
 				keepRunningOnDisconnect,
 				pipelineSampleRate
@@ -95,6 +105,13 @@ class AppSettings {
 		} catch {
 			// Plugin unavailable (e.g. non-Tauri dev preview) -- leave the mirror as-is.
 		}
+	}
+
+	async setLaunchOnStartup(enabled: boolean): Promise<void> {
+		if (enabled) await enable();
+		else await disable();
+		this.launchOnStartup = await isEnabled();
+		this.persist();
 	}
 }
 

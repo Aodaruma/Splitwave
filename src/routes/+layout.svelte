@@ -19,12 +19,18 @@
 	import { LogsModal } from '$lib/modules/logs/ui';
 	import { platform } from '@tauri-apps/plugin-os';
 	import { initAnnouncements } from '$lib/modules/announcements';
+	import { desktopStore } from '$lib/modules/desktop/stores.svelte';
+	import { errorStore } from '$lib/modules/error';
 
 	const isDev = import.meta.env.DEV;
 
 	let { children } = $props();
 
 	let unlistenMenu: UnlistenFn | undefined;
+
+	$effect(() => {
+		void desktopStore.sync().catch((error) => audioStore.reportError(error));
+	});
 
 	function focusedField(): HTMLInputElement | HTMLTextAreaElement | null {
 		const el = document.activeElement;
@@ -102,9 +108,11 @@
 		window.addEventListener('keydown', onLogsHotkey);
 		await installErrorHandlers().catch(() => {});
 		loadAppInfo().catch(() => {});
+		await desktopStore.init().catch((error) => audioStore.reportError(error));
 		try {
 			await audioStore.init();
 			await audioStore.autoActivateOnLaunch();
+			if (!errorStore.current) await desktopStore.hideOnLaunch();
 		} catch {}
 		pipelineStore.refresh().catch(() => {});
 		initAnnouncements();
@@ -125,6 +133,7 @@
 
 	onDestroy(() => {
 		unlistenMenu?.();
+		desktopStore.destroy();
 		window.removeEventListener('keydown', onKeydown);
 		window.removeEventListener('keydown', onLogsHotkey);
 		audioStore.destroy();
@@ -144,6 +153,12 @@
 {/if}
 
 <ModalRender />
+
+{#if desktopStore.quitting}
+	<div class="fixed inset-0 z-[1000] flex items-center justify-center bg-neutral-100/90" role="status" aria-live="polite">
+		<p class="text-sm text-theme">Saving and stopping audio…</p>
+	</div>
+{/if}
 
 {#if isDev}
 	<DebugPanel />

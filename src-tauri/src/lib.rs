@@ -1,5 +1,6 @@
 mod audio;
 pub mod commands;
+mod desktop;
 mod error;
 mod logs;
 mod native_crash;
@@ -243,6 +244,11 @@ pub fn run() {
         .ok();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            let _ = desktop::show_main_window(app.clone());
+        }))
+        .manage(desktop::DesktopState::default())
+        .on_window_event(desktop::window_event)
         .setup(|app| {
             info!("app started");
             let handle = app.handle().clone();
@@ -302,6 +308,11 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState::spawn())
         .invoke_handler(tauri::generate_handler![
+            desktop::sync_desktop,
+            desktop::show_main_window,
+            desktop::hide_main_window,
+            desktop::complete_desktop_exit,
+            desktop::cancel_desktop_exit,
             commands::scan_plugins,
             commands::open_plugin_editor,
             commands::close_plugin_editor,
@@ -366,7 +377,8 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_, event| {
+        .run(|app, event| {
+            desktop::run_event(app, &event);
             if matches!(event, tauri::RunEvent::Exit) {
                 mark_clean_exit();
             }

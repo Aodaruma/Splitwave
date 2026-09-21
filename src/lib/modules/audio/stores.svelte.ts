@@ -40,6 +40,7 @@ class AudioStore {
 	pendingNodeIds = $state<Set<string>>(new Set());
 	missingFilePaths = $state<Set<string>>(new Set());
 	safeMode = $state(false);
+	shuttingDown = false;
 
 	private lastGraph: StartPipelinePayload | null = null;
 	private fullGraph: StartPipelinePayload | null = null;
@@ -192,12 +193,14 @@ class AudioStore {
 	}
 
 	async activatePipeline(pipelineId: string, graph: StartPipelinePayload): Promise<void> {
+		if (this.shuttingDown) return;
 		this.safeMode = false;
 		this.lastGraph = graph;
 		this.fullGraph = graph;
 		const excluded = appSettings.keepRunningOnDisconnect ? await this.unresolvedInputIds(graph) : new Set<string>();
 		this.pendingNodeIds = excluded;
 		const toStart = excluded.size > 0 ? this.buildReducedGraph(graph, excluded) : graph;
+		if (this.shuttingDown) return;
 		try {
 			await methods.startPipeline(toStart);
 			this.lastGraph = toStart;
@@ -224,7 +227,7 @@ class AudioStore {
 	private async handleStartError(e: unknown, pipelineId: string, graph: StartPipelinePayload): Promise<boolean> {
 		const nodeId = this.chooseFileNodeIdFrom(e);
 		if (!nodeId) return false;
-		if (pipelineStore.editorActions) {
+		if (pipelineStore.editorActions?.getSnapshot()?.id === pipelineId) {
 			this.chooseFileNodeId = nodeId;
 			this.pendingRetryPipelineId = pipelineId;
 			return true;
@@ -287,8 +290,21 @@ class AudioStore {
 		this.isRunning = false;
 		this.runningPipelineId = null;
 		this.startedAt = null;
-		await methods.stopPipeline().catch(() => {});
-		await pipelineMethods.setActivePipelineId(null).catch(() => {});
+		try {
+			await methods.stopPipeline();
+		} finally {
+			await pipelineMethods.setActivePipelineId(null);
+		}
+	}
+
+	async stopForExit(): Promise<void> {
+		this.shuttingDown = true;
+		this.stopPendingReconnectLoop();
+		this.pendingNodeIds.clear();
+		this.isRunning = false;
+		this.runningPipelineId = null;
+		this.startedAt = null;
+		await methods.stopPipeline();
 	}
 
 	/** Restores the pipeline that was active when the app last closed (or the
@@ -395,11 +411,13 @@ class AudioStore {
 	}
 
 	private async tryReconnectPending(): Promise<void> {
+		if (this.shuttingDown) return;
 		if (!appSettings.keepRunningOnDisconnect || this.pendingNodeIds.size === 0 || !this.fullGraph || !this.isRunning) {
 			this.stopPendingReconnectLoop();
 			return;
 		}
 		const stillUnresolved = await this.unresolvedInputIds(this.fullGraph);
+		if (this.shuttingDown) return;
 		const isUnchanged = stillUnresolved.size === this.pendingNodeIds.size && [...stillUnresolved].every((id) => this.pendingNodeIds.has(id));
 		if (isUnchanged) return;
 		this.pendingNodeIds = stillUnresolved;
@@ -428,6 +446,7 @@ class AudioStore {
 	 * streams stay alive across edits when their spec is unchanged.
 	 * Falls back to stop + start if the pipeline isn't running. */
 	async restartPipeline(graph: StartPipelinePayload): Promise<void> {
+		if (this.shuttingDown) return;
 		this.fullGraph = graph;
 		for (const id of this.pendingNodeIds) {
 			if (!graph.nodes.some((n) => n.id === id)) {
