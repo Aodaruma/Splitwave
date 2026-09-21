@@ -3,7 +3,7 @@
 	import { Position, useNodeConnections, useUpdateNodeInternals } from '@xyflow/svelte';
 	import Handle from './_handle.svelte';
 	import { channelColor, deriveSlots, handleEdgeStyle } from '$lib/modules/flow/utils';
-	import { channelCaps, channelSelection } from '$lib/modules/flow/stores.svelte';
+	import { channelCaps, channelPorts, channelSelection } from '$lib/modules/flow/stores.svelte';
 
 	interface Props {
 		nodeId: string;
@@ -30,6 +30,16 @@
 			: incoming.current.map((c) => c.targetHandle).filter((h): h is string => !!h)
 	);
 	let slots = $derived(deriveSlots(occupied, grows, max, min).filter((s) => grows || s.occupied));
+
+	$effect(() => {
+		channelPorts.set(nodeId, { ...channelPorts.get(nodeId), [side]: { max, min, selfGrowing } });
+		return () => {
+			const ports = channelPorts.get(nodeId);
+			if (!ports) return;
+			delete ports[side];
+			if (!ports.source && !ports.target) channelPorts.delete(nodeId);
+		};
+	});
 
 	$effect(() => {
 		if (isSource) return;

@@ -50,6 +50,7 @@
 			| 'maxSnapshots'
 			| 'snapToGrid'
 			| 'gridSize'
+			| 'canvasScroll'
 			| 'confirmOverwriteChanges'
 			| 'keepRunningOnDisconnect'
 			| 'pipelineSampleRate'
@@ -147,14 +148,27 @@
 		<section class="flex flex-col gap-2">
 			<div>
 				<h2 class="text-sm font-semibold text-theme">Canvas</h2>
-				<p class="text-xs text-neutral-900">Where nodes land when you drag them.</p>
+				<p class="text-xs text-neutral-900">Drag the background to select, nodes to move, or the middle button to pan.</p>
 			</div>
 
 			<Toggle
 				checked={appSettings.snapToGrid}
 				label="Snap to grid"
-				hint="Nodes align to a fixed grid instead of moving freely."
+				hint="Snap moved or copied nodes to the grid. Shift+Tab on the canvas also toggles this; existing nodes stay in place."
 				onChange={() => setApp('snapToGrid', !appSettings.snapToGrid)} />
+
+			<label class="flex items-center justify-between gap-3 text-xs text-neutral-900">
+				Scroll / wheel
+				<select
+					class="rounded-lg border border-neutral-400 bg-neutral-100 px-2 py-1 text-neutral-1000"
+					value={appSettings.canvasScroll}
+					onchange={(e) => setApp('canvasScroll', e.currentTarget.value as typeof appSettings.canvasScroll)}>
+					<option value="auto">Auto (macOS: pan, Windows/Linux: zoom)</option>
+					<option value="pan">Pan (trackpad)</option>
+					<option value="zoom">Zoom (mouse)</option>
+				</select>
+			</label>
+			<p class="text-xs text-neutral-900">Pinch always zooms.</p>
 
 			{#if appSettings.snapToGrid}
 				<div class="flex items-center gap-2 pl-1">

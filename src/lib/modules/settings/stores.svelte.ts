@@ -9,6 +9,7 @@ interface Stored {
 	maxSnapshots: number;
 	snapToGrid: boolean;
 	gridSize: number;
+	canvasScroll: 'auto' | 'pan' | 'zoom';
 	launchOnStartup: boolean;
 	confirmOverwriteChanges: boolean;
 	keepRunningOnDisconnect: boolean;
@@ -21,6 +22,7 @@ const DEFAULTS: Stored = {
 	maxSnapshots: 20,
 	snapToGrid: false,
 	gridSize: 20,
+	canvasScroll: 'auto',
 	launchOnStartup: false,
 	confirmOverwriteChanges: true,
 	keepRunningOnDisconnect: true,
@@ -47,6 +49,7 @@ class AppSettings {
 	maxSnapshots = $state(this.#initial.maxSnapshots);
 	snapToGrid = $state(this.#initial.snapToGrid);
 	gridSize = $state(this.#initial.gridSize);
+	canvasScroll = $state(this.#initial.canvasScroll);
 	launchOnStartup = $state(this.#initial.launchOnStartup);
 	confirmOverwriteChanges = $state(this.#initial.confirmOverwriteChanges);
 	keepRunningOnDisconnect = $state(this.#initial.keepRunningOnDisconnect);
@@ -60,6 +63,7 @@ class AppSettings {
 			maxSnapshots,
 			snapToGrid,
 			gridSize,
+			canvasScroll,
 			launchOnStartup,
 			confirmOverwriteChanges,
 			keepRunningOnDisconnect,
@@ -73,6 +77,7 @@ class AppSettings {
 				maxSnapshots,
 				snapToGrid,
 				gridSize,
+				canvasScroll,
 				launchOnStartup,
 				confirmOverwriteChanges,
 				keepRunningOnDisconnect,
