@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { Edge, Node } from '@xyflow/svelte';
-import { alignNodes, insertReroute, planBulkBypass, reroutePath } from '../src/lib/modules/flow/utils/layout';
+import { alignNodes, insertReroute, planBulkBypass, reroutePath, withReroutePoints } from '../src/lib/modules/flow/utils/layout';
 import { applyWireInsertion, planWireInsertion, wireHitsBounds } from '../src/lib/modules/flow/utils/insertion';
 import { copyGraph, pasteGraph } from '../src/lib/modules/flow/utils/clipboard';
 import { createHistoryRestorer } from '../src/lib/modules/flow/utils/history_restore';
@@ -310,6 +310,23 @@ describe('bulk bypass and scoped shortcuts', () => {
 });
 
 describe('snapshot transactions and shared definitions', () => {
+	it('cancels cable geometry without restoring disconnected peers or overwriting concurrent routes', () => {
+		const points = [{ x: 40, y: 70 }];
+		const before: Edge[] = [
+			{ id: 'cable', source: 'source', target: 'target', data: { reroutes: points } },
+			{ id: 'peer', source: 'webrtc', sourceHandle: 'peer:remote', target: 'target' }
+		];
+		const moved = withReroutePoints(before, 'cable', [{ x: 80, y: 90 }]);
+		const current = moved.filter((edge) => edge.id !== 'peer').map((edge) => ({ ...edge, targetHandle: 'ch2' }));
+		current.push({ id: 'new', source: 'source', target: 'other', targetHandle: 'ch1' });
+		const restored = withReroutePoints(current, 'cable', points);
+		expect(restored.map((edge) => edge.id)).toEqual(['cable', 'new']);
+		expect(restored[0].targetHandle).toBe('ch2');
+		expect(restored[0].data?.reroutes).toEqual(points);
+		expect(restored[1]).toBe(current[1]);
+		expect(withReroutePoints([], 'cable', points)).toEqual([]);
+	});
+
 	it('one history step restores both insertion wiring and position, including cable points', async () => {
 		const initial = pipeline();
 		initial.edges = initial.edges.filter((e) => e.id === 'L' || e.id === 'R');

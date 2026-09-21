@@ -1,4 +1,4 @@
-import type { Node } from '@xyflow/svelte';
+import type { Edge, Node } from '@xyflow/svelte';
 import type { EdgeLayout, NodeCategory } from '../../pipeline/types';
 import type { Point } from './wiring';
 
@@ -40,6 +40,10 @@ export function planBulkBypass(
 
 export function translateEdgeLayout(data: EdgeLayout | undefined, offset: Point): EdgeLayout | undefined {
 	return data ? { ...data, reroutes: data.reroutes?.map((p) => ({ x: p.x + offset.x, y: p.y + offset.y })) } : undefined;
+}
+
+export function withReroutePoints<T extends Edge>(edges: T[], id: string, points: Point[]): T[] {
+	return edges.map((edge) => (edge.id === id ? { ...edge, data: { ...edge.data, reroutes: points } } : edge));
 }
 
 /** Rerouted cables are polylines so their visible path and insertion order agree exactly. */

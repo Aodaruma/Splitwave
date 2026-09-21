@@ -17,7 +17,7 @@
 	import { createHistoryRestorer } from '../utils/history_restore';
 	import { planAutoConnect, type AudioPorts } from '../utils/auto_connect';
 	import { canvasShortcut } from '../utils/shortcuts';
-	import { alignNodes, insertReroute, planBulkBypass, type AlignmentAxis } from '../utils/layout';
+	import { alignNodes, insertReroute, planBulkBypass, withReroutePoints, type AlignmentAxis } from '../utils/layout';
 	import { applyWireInsertion, planWireInsertion, wireHitsBounds } from '../utils/insertion';
 	import { EDGE_ACTIONS, type EdgeActions } from '../utils/edge_actions';
 	import {
@@ -473,7 +473,7 @@
 	let connectDrag = $state<{ source: string; pointerId: number; startX: number; startY: number; x: number; y: number } | null>(null);
 	let connectNotice = $state('');
 	let cutDrag = $state.raw<{ pointerId: number; points: Point[]; hits: Set<string> } | null>(null);
-	let pointMotion = $state.raw<{ pointerId: number; edgeId: string; index: number; before: XyEdge[]; start: Point; origin: Point } | null>(null);
+	let pointMotion = $state.raw<{ pointerId: number; edgeId: string; index: number; points: Point[]; start: Point; origin: Point } | null>(null);
 	let insertion = $state.raw<NonNullable<ReturnType<typeof planWireInsertion>> | null>(null);
 	let suppressRightMenu = false;
 	let deletingCablePoint = false;
@@ -495,7 +495,7 @@
 	}
 
 	function setCablePoints(id: string, points: Point[]) {
-		edges = edges.map((e) => (e.id === id ? { ...e, data: { ...e.data, reroutes: points } } : e));
+		edges = withReroutePoints(edges, id, points);
 	}
 
 	function removeCablePoint(id: string, index: number) {
@@ -544,7 +544,7 @@
 			pointerId: event.pointerId,
 			edgeId: id,
 			index,
-			before: edges,
+			points,
 			start: flow.screenToFlowPosition({ x: event.clientX, y: event.clientY }, { snapToGrid: false }),
 			origin: points[index]
 		};
@@ -556,7 +556,7 @@
 		const motion = pointMotion;
 		if (!motion || event.pointerId !== motion.pointerId) return;
 		const at = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY }, { snapToGrid: false });
-		const points = (motion.before.find((e) => e.id === motion.edgeId)!.data as EdgeLayout).reroutes!;
+		const points = motion.points;
 		setCablePoints(
 			motion.edgeId,
 			points.map((p, i) => (i === motion.index ? { x: motion.origin.x + at.x - motion.start.x, y: motion.origin.y + at.y - motion.start.y } : p))
@@ -567,19 +567,19 @@
 		const motion = pointMotion;
 		if (!motion) return;
 		flushSync(() => {
-			if (cancel) edges = motion.before;
+			if (cancel) setCablePoints(motion.edgeId, motion.points);
 			pointMotion = null;
 		});
 		clearTimeout(saveTimer);
 		saveTimer = undefined;
 		if (editorElement.hasPointerCapture(motion.pointerId)) editorElement.releasePointerCapture(motion.pointerId);
-		if (!cancel) {
-			try {
-				commit(getSnapshot());
-			} catch (error) {
-				edges = motion.before;
-				audioStore.reportError(error);
-			}
+		try {
+			const snap = getSnapshot();
+			// Peer disconnects can change the graph while point dragging pauses autosave.
+			if (!cancel || snapshotSignature(snap) !== snapshotSignature(history[cursor])) commit(snap);
+		} catch (error) {
+			setCablePoints(motion.edgeId, motion.points);
+			audioStore.reportError(error);
 		}
 	}
 
