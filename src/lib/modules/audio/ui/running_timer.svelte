@@ -18,4 +18,6 @@
 	});
 </script>
 
-<span class="font-mono text-xs text-neutral-800 tabular-nums">{formatDuration(elapsed)}</span>
+<span
+	class="inline-flex h-7 min-w-[8ch] shrink-0 items-center justify-end font-mono text-[13px] leading-none whitespace-nowrap text-neutral-800 tabular-nums"
+	title="Running time">{formatDuration(elapsed)}</span>

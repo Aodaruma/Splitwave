@@ -241,7 +241,7 @@
 	});
 </script>
 
-<div class={['flex flex-col rounded-2xl border border-neutral-400 bg-neutral-200 shadow-sm', isPreview ? 'h-40 w-80' : 'h-full w-full']}>
+<div class={['flex flex-col rounded-xl border border-neutral-400 bg-neutral-200 shadow-sm', isPreview ? 'h-40 w-80' : 'h-full w-full']}>
 	{#if !isPreview}
 		<NodeResizer minWidth={200} maxWidth={1400} minHeight={110} maxHeight={1400} />
 	{/if}

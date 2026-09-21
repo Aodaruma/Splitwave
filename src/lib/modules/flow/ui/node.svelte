@@ -78,7 +78,7 @@
 	}
 </script>
 
-<div class={['node-shell min-w-32 rounded-2xl border border-neutral-400 bg-neutral-200 p-4 shadow-sm', !wide && 'max-w-80']}>
+<div class={['node-shell min-w-32 rounded-xl border border-neutral-400 bg-neutral-200 p-4 shadow-sm', !wide && 'max-w-80']}>
 	<div class="mb-2 flex items-center justify-between gap-2">
 		<span class="flex items-center gap-1.5 text-[10px] font-semibold tracking-wider text-neutral-900 uppercase">
 			{#if NodeIcon}
