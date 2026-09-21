@@ -122,7 +122,9 @@
 				'flex-1 truncate rounded-md border px-2 py-1 font-mono text-xs tabular-nums transition-colors',
 				binding ? 'border-blue-500/60 bg-blue-500/10 text-blue-500' : 'border-neutral-400 bg-neutral-100 text-neutral-1100 hover:bg-neutral-200'
 			]}
-			onclick={() => (binding = !binding)}>
+			onclick={() => (binding = !binding)}
+			onkeydown={binding ? capture : undefined}
+			onblur={() => (binding = false)}>
 			{binding ? 'Press a key...' : data.hotkey ? formatAccelerator(data.hotkey) : 'Bind key'}
 		</button>
 		{#if data.hotkey && !binding}
@@ -175,5 +177,3 @@
 		{/if}
 	</div>
 </Wrapper>
-
-<svelte:window onkeydown={binding ? capture : undefined} />
