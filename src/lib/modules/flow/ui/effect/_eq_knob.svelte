@@ -9,6 +9,8 @@
 		unit = '',
 		logarithmic = false,
 		disabled = false,
+		helpId,
+		description = label,
 		defaultValue,
 		onChange
 	}: {
@@ -20,12 +22,16 @@
 		unit?: string;
 		logarithmic?: boolean;
 		disabled?: boolean;
+		helpId?: string;
+		description?: string;
 		defaultValue: number;
 		onChange: (v: number) => void;
 	} = $props();
 	const position = (v: number) => (logarithmic ? Math.log(clamp(v, min, max) / min) / Math.log(max / min) : (v - min) / (max - min));
 	const fromPosition = (t: number) => (logarithmic ? min * (max / min) ** clamp(t, 0, 1) : min + clamp(t, 0, 1) * (max - min));
 	let angle = $derived(-135 + 270 * position(value));
+	let arcStart = $derived(min < 0 ? position(0) : 0);
+	let arcValue = $derived(clamp(position(value), 0, 1));
 	let drag: { id: number; y: number; position: number } | null = null;
 	function change(v: number) {
 		if (!disabled && Number.isFinite(v)) onChange(clamp(Math.round(v / step) * step, min, max));
@@ -67,19 +73,21 @@
 	}
 </script>
 
-<div class="nodrag nopan nowheel flex min-w-0 flex-1 flex-col items-center gap-1" class:opacity-40={disabled}>
-	<span class="text-[10px] text-neutral-800">{label}</span>
+<div class="nodrag nopan nowheel flex max-w-[136px] min-w-0 flex-1 items-center gap-1.5" class:opacity-40={disabled}>
 	<div
-		class="nodrag nopan nowheel relative h-10 w-10 cursor-ns-resize rounded-full border-2 border-neutral-400 bg-neutral-200 focus-visible:outline-2 focus-visible:outline-amber-500"
+		class="nodrag nopan nowheel size-13 shrink-0 cursor-ns-resize rounded-full text-amber-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 dark:text-amber-400 dark:focus-visible:outline-amber-400"
 		style="touch-action: none"
 		role="slider"
 		tabindex={disabled ? -1 : 0}
 		aria-label={label}
+		aria-describedby={helpId}
+		aria-orientation="vertical"
 		aria-valuemin={min}
 		aria-valuemax={max}
 		aria-valuenow={value}
 		aria-valuetext={disabled ? 'Not applicable' : `${value} ${unit}`}
 		aria-disabled={disabled}
+		title="{description} — Drag or use arrow keys; Shift: fine; Enter or double-click: reset"
 		onpointerdown={down}
 		onpointermove={move}
 		onpointerup={end}
@@ -87,26 +95,51 @@
 		onlostpointercapture={() => (drag = null)}
 		onkeydown={key}
 		ondblclick={reset}>
-		<div class="pointer-events-none absolute inset-0" style:transform="rotate({angle}deg)">
-			<div class="absolute top-1 left-1/2 h-3 w-0.5 -translate-x-1/2 rounded bg-amber-500"></div>
+		<svg viewBox="0 0 52 52" class="pointer-events-none size-full" fill="none" aria-hidden="true">
+			<path d="M10.444 41.556A22 22 0 1 1 41.556 41.556" class="stroke-neutral-400" stroke-width="3" stroke-linecap="round" />
+			<path
+				d="M10.444 41.556A22 22 0 1 1 41.556 41.556"
+				pathLength="100"
+				stroke="currentColor"
+				stroke-width="3"
+				stroke-linecap="round"
+				stroke-dasharray="{Math.abs(arcValue - arcStart) * 100} 100"
+				stroke-dashoffset={-Math.min(arcStart, arcValue) * 100} />
+			<circle cx="26" cy="26" r="16" class="fill-neutral-200 stroke-neutral-500" />
+			<path d="M26 14V21" transform="rotate({angle} 26 26)" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
+		</svg>
+	</div>
+	<div class="min-w-0 flex-1">
+		<span class="mb-1 block text-[10px] font-medium text-neutral-1200" title={description}>{label}</span>
+		<div class="flex h-6 items-center rounded border border-neutral-500 bg-neutral-50 focus-within:border-amber-600 dark:focus-within:border-amber-400">
+			<input
+				class="nodrag nopan nowheel min-w-0 flex-1 rounded bg-transparent py-1 pl-1 text-center font-mono text-[11px] text-neutral-1200 tabular-nums focus-visible:outline-2 focus-visible:outline-amber-600 dark:focus-visible:outline-amber-400"
+				type="number"
+				aria-label="{label} value{unit ? ` (${unit})` : ''}"
+				{min}
+				{max}
+				{step}
+				{disabled}
+				value={Number(value.toFixed(2))}
+				onchange={(e) => {
+					change(e.currentTarget.valueAsNumber);
+					e.currentTarget.value = String(value);
+				}}
+				onkeydown={(e) => e.stopPropagation()}
+				ondblclick={reset} />
+			{#if unit}<span class="pr-1 text-[9px] text-neutral-1100" aria-hidden="true">{unit}</span>{/if}
 		</div>
 	</div>
-	<div class="flex w-full items-center justify-center gap-1">
-		<input
-			class="nodrag nopan nowheel w-16 rounded border border-neutral-300 bg-neutral-100 px-1 text-center font-mono text-[10px] tabular-nums"
-			type="number"
-			aria-label="{label} value"
-			{min}
-			{max}
-			{step}
-			{disabled}
-			value={Number(value.toFixed(2))}
-			onchange={(e) => {
-				change(e.currentTarget.valueAsNumber);
-				e.currentTarget.value = String(value);
-			}}
-			onkeydown={(e) => e.stopPropagation()}
-			ondblclick={reset} />
-		<span class="text-[9px] text-neutral-700">{unit}</span>
-	</div>
 </div>
+
+<style>
+	input[type='number'] {
+		appearance: textfield;
+		-moz-appearance: textfield;
+	}
+	input::-webkit-inner-spin-button,
+	input::-webkit-outer-spin-button {
+		-webkit-appearance: none;
+		margin: 0;
+	}
+</style>

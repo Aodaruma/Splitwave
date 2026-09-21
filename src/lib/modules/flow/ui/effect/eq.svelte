@@ -54,8 +54,8 @@
 	let cut = $derived(parametric && ['lowCut', 'highCut'].includes(band.filter));
 	let error = $state('');
 	let plot: HTMLDivElement;
-	const W = 328,
-		H = 144;
+	const W = 418,
+		H = 224;
 	const yPosition = (db: number) => (18 - clamp(db, -18, 18)) / 36;
 	let frequencies = $derived(parametric ? eq.bands.map((b) => b.frequency) : GRAPHIC_FREQUENCIES);
 	let curve = $derived.by(() =>
@@ -65,12 +65,12 @@
 			return `${i ? 'L' : 'M'}${(t * W).toFixed(2)},${(yPosition(db) * H).toFixed(2)}`;
 		}).join(' ')
 	);
-	const filters: { value: EqFilter; label: string }[] = [
-		{ value: 'bell', label: 'Bell' },
-		{ value: 'lowShelf', label: 'Low shelf' },
-		{ value: 'highShelf', label: 'High shelf' },
-		{ value: 'lowCut', label: 'Low cut · 12 dB/oct' },
-		{ value: 'highCut', label: 'High cut · 12 dB/oct' }
+	const filters: { value: EqFilter; label: string; path: string }[] = [
+		{ value: 'bell', label: 'Bell', path: 'M2 15H7C12 15 10 5 16 5S20 15 25 15H30' },
+		{ value: 'lowShelf', label: 'Low shelf', path: 'M2 6H10C16 6 16 15 22 15H30' },
+		{ value: 'highShelf', label: 'High shelf', path: 'M2 15H10C16 15 16 6 22 6H30' },
+		{ value: 'lowCut', label: 'Low cut · 12 dB/oct', path: 'M2 20C10 20 9 6 17 6H30' },
+		{ value: 'highCut', label: 'High cut · 12 dB/oct', path: 'M2 6H15C23 6 22 20 30 20' }
 	];
 
 	function patch(p: Partial<EqData>) {
@@ -156,6 +156,13 @@
 	}
 </script>
 
+{#snippet filterShape(filter: EqFilter)}
+	<svg viewBox="0 0 32 24" class="h-5 w-7 shrink-0" fill="none" aria-hidden="true">
+		<path d="M2 15H30" stroke="currentColor" stroke-opacity="0.2" />
+		<path d={filters.find((f) => f.value === filter)?.path} stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+	</svg>
+{/snippet}
+
 <Wrapper
 	label="EQ"
 	icon={Sliders}
@@ -168,29 +175,28 @@
 	bypassed={eq.bypassed}
 	onBypass={() => patch({ bypassed: !eq.bypassed })}>
 	<div
-		class="nodrag nopan nowheel flex w-[360px] flex-col gap-2"
+		class="nodrag nopan nowheel flex w-[460px] flex-col gap-2"
 		onkeydown={(e) => e.stopPropagation()}
 		role="toolbar"
 		tabindex="-1"
 		aria-label="EQ controls">
-		<PresetBar kind="eq" data={eq} onApply={applyPreset} />
-		<label class="flex items-center justify-between text-[10px] text-neutral-800"
-			>Mode
+		<div class="flex items-center gap-2">
+			<div class="min-w-0 flex-1"><PresetBar kind="eq" data={eq} onApply={applyPreset} /></div>
 			<select
-				class="nodrag nopan nowheel rounded border border-neutral-400 bg-neutral-100 p-1 text-neutral-1000"
+				class="nodrag nopan nowheel h-7 rounded border border-neutral-400 bg-neutral-100 px-1.5 text-[10px] text-neutral-1200 focus-visible:outline-2 focus-visible:outline-amber-600 dark:focus-visible:outline-amber-400"
 				aria-label="EQ mode"
+				aria-describedby="{id}-eq-mode-help"
+				title="Modes keep separate settings; switching changes the sound."
 				value={eq.mode}
 				onchange={(e) => switchMode(e.currentTarget.value as EqData['mode'])}>
-				<option value="parametric">Parametric · 8 bands</option><option value="graphic">Graphic (legacy) · 10 bands</option>
+				<option value="parametric">Parametric · 8</option><option value="graphic">Graphic (legacy) · 10</option>
 			</select>
-		</label>
-		<p class="text-[9px] leading-snug text-neutral-700">
-			{parametric
-				? 'Drag a point to set frequency / gain. Q controls bandwidth or resonance.'
-				: 'Fixed frequencies preserve the legacy crossover sound. Drag points to set gain.'} Modes keep separate settings; switching changes the sound.
+		</div>
+		<p id="{id}-eq-mode-help" class="sr-only">
+			Modes keep separate settings; switching changes the sound. Graphic mode uses fixed frequencies and preserves the legacy crossover sound.
 		</p>
-		<div class="rounded border border-neutral-400 bg-neutral-100 px-4 pt-3 pb-1">
-			<div bind:this={plot} class="relative h-36">
+		<div class="rounded-lg border border-neutral-400 bg-neutral-50 px-5 pt-4 pb-2">
+			<div bind:this={plot} class="relative h-56 text-neutral-1100">
 				<svg
 					viewBox="0 0 {W} {H}"
 					class="absolute h-full w-full overflow-visible"
@@ -204,11 +210,12 @@
 							x2={W}
 							y2={yPosition(db) * H}
 							stroke="currentColor"
-							stroke-opacity={db === 0 ? 0.4 : 0.15}
-							stroke-width="0.6" />
-						<text x="2" y={yPosition(db) * H - 2} font-size="7" fill="currentColor" opacity="0.6">{db > 0 ? '+' : ''}{db}</text>
+							stroke-opacity={db === 0 ? 0.4 : 0.13}
+							stroke-width={db === 0 ? 1 : 0.6} />
+						<text x="2" y={yPosition(db) * H - 4} font-size="9" fill="currentColor">{db > 0 ? '+' : ''}{db}</text>
 					{/each}
-					{#each [100, 1000, 10000].filter((f) => f < max) as f}
+					<text x="2" y="8" font-size="9" fill="currentColor">dB</text>
+					{#each [50, 100, 200, 500, 1000, 2000, 5000, 10000].filter((f) => f < max) as f}
 						<line
 							x1={frequencyPosition(f, max) * W}
 							y1="0"
@@ -218,20 +225,25 @@
 							stroke-opacity="0.15"
 							stroke-width="0.6" />
 					{/each}
-					<path d={curve} stroke="rgb(245 158 11)" stroke-width="1.5" fill="none" opacity={eq.bypassed ? 0.4 : 1} />
+					<path d="{curve} L{W},{H / 2} L0,{H / 2} Z" class="fill-amber-600/10 dark:fill-amber-400/10" />
+					<path d={curve} class="stroke-amber-700 dark:stroke-amber-400" stroke-width="2" vector-effect="non-scaling-stroke" fill="none" />
 				</svg>
 				{#each frequencies as freq, i}
 					{@const b = parametric ? eq.bands[i] : null}
 					{@const gain = b ? (['lowCut', 'highCut'].includes(b.filter) ? 0 : b.gainDb) : eq.gainsDb[i]}
 					<button
 						type="button"
-						class="nodrag nopan nowheel absolute flex h-5 w-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border font-mono text-[9px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 {selected ===
+						class="nodrag nopan nowheel absolute flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border font-mono text-[10px] font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 dark:focus-visible:outline-amber-400 {selected ===
 						i
-							? 'border-amber-600 bg-amber-500 text-black'
-							: 'border-neutral-600 bg-neutral-200 text-neutral-1000'}"
-						style="left:{frequencyPosition(freq, max) * 100}%;top:{yPosition(gain) * 100}%;touch-action:none;opacity:{b && !b.enabled ? 0.45 : 1}"
+							? 'z-10 border-amber-700 bg-amber-500 text-black ring-2 ring-amber-600/25 dark:border-amber-400 dark:ring-amber-400/25'
+							: 'border-neutral-800 bg-neutral-100 text-neutral-1200 hover:border-amber-600 dark:hover:border-amber-400'}"
+						class:border-dashed={b && !b.enabled}
+						style="left:{frequencyPosition(freq, max) * 100}%;top:{yPosition(gain) * 100}%;touch-action:none"
+						title="Band {i + 1} · {formatFreq(freq)}{b && !b.enabled ? ' · Off' : ''} — {parametric
+							? 'Drag frequency / gain'
+							: 'Drag gain'}; Shift: fine; double-click: reset"
 						aria-label="Band {i + 1}, {Math.round(Math.min(freq, max))} Hz, {gain.toFixed(1)} dB{b
-							? `, Q ${b.q}, ${b.filter}, ${b.enabled ? 'enabled' : 'disabled'}`
+							? `, Q ${b.q}, ${filters.find((f) => f.value === b.filter)?.label}, ${b.enabled ? 'enabled' : 'disabled'}`
 							: ''}"
 						aria-pressed={selected === i}
 						aria-describedby="{id}-eq-help"
@@ -243,10 +255,10 @@
 						onpointercancel={end}
 						onlostpointercapture={() => (drag = null)}
 						onkeydown={(e) => key(i, e)}
-						ondblclick={() => resetBand(i)}>{i + 1}</button>
+						ondblclick={() => resetBand(i)}><span class:line-through={b && !b.enabled}>{i + 1}</span></button>
 				{/each}
 			</div>
-			<div class="relative mt-3 h-3 font-mono text-[8px] text-neutral-700">
+			<div class="relative mt-4 h-3 font-mono text-[9px] text-neutral-1100 tabular-nums">
 				<span class="absolute left-0">20 Hz</span>
 				{#each [100, 1000, 10000].filter((f) => f < max / 1.5) as f}
 					<span class="absolute -translate-x-1/2" style:left={frequencyPosition(f, max) * 100 + '%'}>{formatFreq(f)}</span>
@@ -255,75 +267,152 @@
 			</div>
 		</div>
 		<div class="flex gap-1" role="group" aria-label="Select EQ band">
-			{#each frequencies as _, i}<button
+			{#each frequencies as freq, i}
+				{@const enabled = !parametric || eq.bands[i].enabled}
+				<button
 					type="button"
-					class="nodrag nopan nowheel flex-1 rounded border py-0.5 text-[10px] {selected === i
-						? 'border-amber-500 text-amber-700'
-						: 'border-neutral-400 text-neutral-800'}"
-					aria-label="Select band {i + 1}"
+					class="nodrag nopan nowheel flex h-8 min-w-0 flex-1 items-center justify-center gap-1 rounded border font-mono text-[10px] font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 dark:focus-visible:outline-amber-400 {selected ===
+					i
+						? 'border-amber-600 bg-amber-500/15 text-amber-900 dark:border-amber-400 dark:text-amber-200'
+						: 'border-neutral-400 bg-neutral-100 text-neutral-1200 hover:bg-neutral-300'}"
+					class:border-dashed={!enabled}
+					title="Band {i + 1} · {formatFreq(freq)}{enabled ? '' : ' · Off'}"
+					aria-label="Select band {i + 1}, {formatFreq(freq)}{parametric ? `, ${enabled ? 'enabled' : 'disabled'}` : ''}"
 					aria-pressed={selected === i}
-					onclick={() => (selected = i)}>{i + 1}</button
-				>{/each}
+					onclick={() => (selected = i)}>
+					<span class:line-through={!enabled}>{i + 1}</span>
+					{#if parametric}{@render filterShape(eq.bands[i].filter)}{/if}
+				</button>
+			{/each}
 		</div>
-		{#if parametric}
-			<div class="flex items-center justify-between gap-2 text-[10px]">
-				<label class="flex items-center gap-1"
-					><input
-						class="nodrag nopan nowheel"
-						type="checkbox"
-						checked={band.enabled}
-						onchange={(e) => setBand(selected, { enabled: e.currentTarget.checked })} />Band {selected + 1}</label>
-				<select
-					class="nodrag nopan nowheel rounded border border-neutral-400 bg-neutral-100 p-1"
-					aria-label="Band filter type"
-					value={band.filter}
-					onchange={(e) => setBand(selected, { filter: e.currentTarget.value as EqFilter })}
-					>{#each filters as f}<option value={f.value}>{f.label}</option>{/each}</select>
+		<div class="rounded-lg border border-neutral-400 bg-neutral-100 px-2 py-2" role="group" aria-label="Band {selected + 1} controls">
+			<div class="flex items-center justify-between gap-2">
+				{#if parametric}
+					<button
+						type="button"
+						class="eq-icon nodrag nopan nowheel {band.enabled ? 'text-amber-800 dark:text-amber-300' : 'text-neutral-1100'}"
+						aria-label="Enable band {selected + 1}"
+						aria-pressed={band.enabled}
+						title="Band {selected + 1}: {band.enabled ? 'on — click to disable' : 'off — click to enable'}"
+						onclick={() => setBand(selected, { enabled: !band.enabled })}>
+						<svg viewBox="0 0 24 24" class="size-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+							<path d="M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0" />
+						</svg>
+					</button>
+					<div class="flex gap-1" role="group" aria-label="Band {selected + 1} filter type">
+						{#each filters as f}
+							<button
+								type="button"
+								class="eq-icon nodrag nopan nowheel w-11 {band.filter === f.value
+									? 'border-amber-600! bg-amber-500/15 text-amber-900 dark:border-amber-400! dark:text-amber-200'
+									: 'text-neutral-1200'}"
+								aria-label={f.label}
+								aria-pressed={band.filter === f.value}
+								title={f.label}
+								onclick={() => setBand(selected, { filter: f.value })}>
+								{@render filterShape(f.value)}
+							</button>
+						{/each}
+					</div>
+				{:else}
+					<span class="px-1 font-mono text-[11px] text-neutral-1200 tabular-nums" title="Fixed legacy band frequency"
+						>{formatFreq(frequencies[selected])}</span>
+				{/if}
+				<button
+					type="button"
+					class="eq-icon nodrag nopan nowheel text-neutral-1200"
+					aria-label="Reset band {selected + 1}"
+					title="Reset band {selected + 1} {parametric ? 'frequency, gain and Q' : 'gain'}"
+					onclick={() => resetBand(selected)}>
+					<svg
+						viewBox="0 0 24 24"
+						class="size-4"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="1.8"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						aria-hidden="true">
+						<path d="M4 4v6h6M4 10a8 8 0 1 1 .7 6" />
+					</svg>
+				</button>
 			</div>
-		{/if}
-		<div class="flex gap-3">
-			<Knob
-				label="Freq"
-				value={parametric ? Math.min(band.frequency, max) : frequencies[selected]}
-				min={20}
-				max={parametric ? max : 20000}
-				step={1}
-				unit="Hz"
-				logarithmic
-				disabled={!parametric}
-				defaultValue={BAND_FREQUENCIES[Math.min(selected, 7)]}
-				onChange={(v) => setBand(selected, { frequency: v })} />
-			<Knob
-				label="Gain"
-				value={cut ? 0 : parametric ? band.gainDb : eq.gainsDb[selected]}
-				min={-18}
-				max={18}
-				step={0.1}
-				unit="dB"
-				disabled={cut}
-				defaultValue={0}
-				onChange={(v) => setGain(selected, v)} />
-			<Knob
-				label="Q"
-				value={parametric ? band.q : Math.SQRT1_2}
-				min={0.1}
-				max={12}
-				step={0.01}
-				logarithmic
-				disabled={!parametric}
-				defaultValue={1}
-				onChange={(v) => setBand(selected, { q: v })} />
+			<div class="flex justify-center gap-3 pt-3 pb-1">
+				{#if parametric}
+					<Knob
+						label="Frequency"
+						value={Math.min(band.frequency, max)}
+						min={20}
+						{max}
+						step={1}
+						unit="Hz"
+						logarithmic
+						helpId="{id}-eq-knob-help"
+						defaultValue={BAND_FREQUENCIES[Math.min(selected, 7)]}
+						onChange={(v) => setBand(selected, { frequency: v })} />
+				{/if}
+				{#if !cut}
+					<Knob
+						label="Gain"
+						value={parametric ? band.gainDb : eq.gainsDb[selected]}
+						min={-18}
+						max={18}
+						step={0.1}
+						unit="dB"
+						helpId="{id}-eq-knob-help"
+						defaultValue={0}
+						onChange={(v) => setGain(selected, v)} />
+				{/if}
+				{#if parametric}
+					<Knob
+						label="Q"
+						value={band.q}
+						min={0.1}
+						max={12}
+						step={0.01}
+						logarithmic
+						helpId="{id}-eq-knob-help"
+						description={cut ? 'Resonance' : 'Bandwidth / resonance'}
+						defaultValue={1}
+						onChange={(v) => setBand(selected, { q: v })} />
+				{/if}
+			</div>
 		</div>
-		{#if cut}<p class="text-[9px] text-neutral-700">Gain is not applicable to cut filters. Q sets resonance.</p>{/if}
-		{#if parametric && eq.bands.some((b) => b.frequency > max)}<p class="text-[9px] text-amber-700">
+		{#if parametric && eq.bands.some((b) => b.frequency > max)}<p class="text-[10px] text-amber-900 dark:text-amber-200">
 				Frequencies above {Math.round(max)} Hz are limited to 49% of this sample rate. Saved values are retained.
 			</p>{/if}
-		{#if !parametric && sr <= 22628}<p role="alert" class="text-[9px] text-red-600">
+		{#if !parametric && sr <= 22628}<p role="alert" class="text-[10px] text-red-700 dark:text-red-300">
 				Legacy EQ requires a sample rate above 22628 Hz. Select Parametric for this rate.
 			</p>{/if}
-		<p id="{id}-eq-help" class="text-[9px] text-neutral-700">
-			Shift: fine adjustment · Arrows: frequency / gain · Double-click or Home: reset point · Knobs: ↑↓ / ←→, Enter to reset
+		<p id="{id}-eq-help" class="sr-only">
+			{parametric
+				? 'Drag or use Left / Right for frequency; Up / Down for gain. Cut filters have no gain control.'
+				: 'Drag or use Up / Down for gain. Frequencies are fixed.'}
+			Hold Shift for fine adjustment. Double-click or Home to reset the band.
 		</p>
-		{#if error}<p role="alert" class="text-[9px] text-red-600">{error}</p>{/if}
+		<p id="{id}-eq-knob-help" class="sr-only">
+			Drag vertically or use arrow keys to adjust. Hold Shift for fine adjustment. Home: minimum; End: maximum; Enter or double-click: reset. Type an
+			exact value in the adjacent field.
+		</p>
+		{#if error}<p role="alert" class="text-[10px] text-red-700 dark:text-red-300">{error}</p>{/if}
 	</div>
 </Wrapper>
+
+<style>
+	.eq-icon {
+		display: flex;
+		min-width: 30px;
+		height: 30px;
+		align-items: center;
+		justify-content: center;
+		border: 1px solid var(--color-neutral-400);
+		border-radius: 5px;
+	}
+	.eq-icon:hover {
+		background-color: var(--color-neutral-300);
+	}
+	.eq-icon:focus-visible {
+		outline: 2px solid currentColor;
+		outline-offset: 2px;
+	}
+</style>
