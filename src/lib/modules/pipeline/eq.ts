@@ -4,24 +4,50 @@ import type { EqMode } from './generated/EqMode';
 
 export const GRAPHIC_FREQUENCIES = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
 export const CROSSOVERS = [45.2548, 89.4427, 176.7767, 353.5534, 707.1068, 1414.2136, 2828.4271, 5656.8542, 11313.7085];
-export const BAND_FREQUENCIES = [40, 100, 250, 630, 1600, 4000, 10000, 16000];
+export const BAND_FREQUENCIES = [20, 75, 100, 250, 1040, 2500, 7500, 20000];
+export const BAND_FILTERS: EqBand['filter'][] = ['lowCut', 'lowShelf', 'bell', 'bell', 'bell', 'bell', 'highShelf', 'highCut'];
+export const LEGACY_BAND_FREQUENCIES = [40, 100, 250, 630, 1600, 4000, 10000, 16000];
 export const maxFrequency = (sampleRate: number) => Math.min(20000, sampleRate * 0.49);
 export const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 export const frequencyPosition = (hz: number, max: number) => Math.log(clamp(hz, 20, max) / 20) / Math.log(max / 20);
 export const positionFrequency = (t: number, max: number) => 20 * (max / 20) ** clamp(t, 0, 1);
 
 export function defaultEq(mode: EqMode = 'parametric'): EqData {
+	if (mode === 'graphic') return legacyEq();
 	return {
+		...legacyEq(),
 		mode,
+		bands: BAND_FREQUENCIES.map((frequency, i) => ({
+			filter: BAND_FILTERS[i],
+			frequency,
+			gainDb: 0,
+			q: i === 0 || i === 7 ? Math.SQRT1_2 : 1,
+			enabled: i >= 2 && i <= 5
+		})) as EqData['bands']
+	};
+}
+
+// Saved data with missing fields must keep the engine's original serde defaults.
+function legacyEq(): EqData {
+	return {
+		mode: 'graphic',
 		gainsDb: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 		bypassed: false,
-		bands: BAND_FREQUENCIES.map((frequency) => ({ filter: 'bell', frequency, gainDb: 0, q: 1, enabled: true })) as EqData['bands']
+		bands: LEGACY_BAND_FREQUENCIES.map((frequency) => ({ filter: 'bell', frequency, gainDb: 0, q: 1, enabled: true })) as EqData['bands']
 	};
 }
 
 /** Absence of mode means the original crossover algorithm, including old presets. */
 export function readEq(stored: Partial<EqData>): EqData {
-	return { ...defaultEq('graphic'), ...stored, mode: stored.mode ?? 'graphic' };
+	return { ...legacyEq(), ...stored, mode: stored.mode ?? 'graphic' };
+}
+
+export function isChannelEq(eq: EqData): boolean {
+	return eq.mode === 'parametric' && eq.bands.length === 8 && eq.bands.every((band, i) => band.filter === BAND_FILTERS[i]);
+}
+
+export function bandEditable(eq: EqData, i: number): boolean {
+	return !eq.bypassed && (eq.mode === 'graphic' || eq.bands[i].enabled);
 }
 
 export type Coefficients = [number, number, number, number, number];
