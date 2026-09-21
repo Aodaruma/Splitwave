@@ -15,6 +15,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# Tauri 2 still requires Tao 0.35; this upstream fix prevents Windows input reentry deadlocks.
+# Remove when tauri-runtime-wry accepts a published Tao release containing tauri-apps/tao#1215.
+[patch.crates-io]
+tao = { git = "https://github.com/tauri-apps/tao", rev = "c704261c519c58cfdd0bc2d58ba24e06a0b71c92" }
+
 # rubato's resamplers are unusable in dev without optimisation — a single
 # block can miss its deadline at -O0, so the DSP worker cannot keep real time
 # and input rings overflow. Optimise just the resampler stack;
