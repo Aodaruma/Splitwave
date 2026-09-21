@@ -22,7 +22,7 @@
 	});
 </script>
 
-<div class="flex items-center gap-1 text-[10px] text-neutral-900">
-	<Checkmark class="h-3 w-3 text-green-600" />
+<div class="flex h-7 shrink-0 items-center gap-1.5 text-[13px] leading-none whitespace-nowrap text-neutral-900" title="Saved {label}">
+	<Checkmark class="size-4 shrink-0 text-green-600" />
 	<span class="font-mono tabular-nums">Saved {label}</span>
 </div>

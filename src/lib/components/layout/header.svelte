@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import { slide } from 'svelte/transition';
-	import { themeStore } from '$lib/modules/theme/stores';
+	import { themeStore, type ThemePref } from '$lib/modules/theme/stores';
 	import { platform } from '@tauri-apps/plugin-os';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { modalManager } from '$lib/modules/overlay/modal';
@@ -11,6 +11,7 @@
 	import { audioStore } from '$lib/modules/audio/stores.svelte';
 	import { Popover } from '$lib/modules/overlay/ui';
 	import { AnnouncementBanner } from '$lib/modules/announcements';
+	import { Dismiss, Maximize, Minus, Navigation, ThemeIcon } from '$lib/components/icons';
 
 	interface Props {
 		left?: Snippet;
@@ -26,6 +27,8 @@
 	const win = customTitlebar ? getCurrentWindow() : null;
 
 	let menuOpen = $state(false);
+	let nextTheme: ThemePref = $derived($themeStore === 'light' ? 'dark' : $themeStore === 'dark' ? 'system' : 'light');
+	let themeLabel = $derived(`Theme: ${$themeStore}. Switch to ${nextTheme}`);
 
 	function about() {
 		menuOpen = false;
@@ -36,7 +39,7 @@
 		checkForUpdates().catch(() => {});
 	}
 	function cycleTheme() {
-		$themeStore = $themeStore === 'light' ? 'dark' : $themeStore === 'dark' ? 'system' : 'light';
+		$themeStore = nextTheme;
 	}
 	function undo() {
 		menuOpen = false;
@@ -50,27 +53,26 @@
 
 <header
 	data-tauri-drag-region
-	class={['z-500 flex h-10 w-full flex-row items-center gap-8 border-b border-theme/5 bg-background px-1.5', customTitlebar ? 'pl-3' : 'pl-20']}>
-	{@render left?.()}
+	class={['z-500 flex h-10 w-full shrink-0 flex-row items-center gap-2 border-b border-theme/5 bg-background px-1.5', customTitlebar ? 'pl-3' : 'pl-20']}>
+	<div data-tauri-drag-region class="header-content flex min-w-0 flex-1 items-center gap-3 overflow-x-auto py-1">
+		{@render left?.()}
+		{#if right}
+			<div class="ml-auto shrink-0">{@render right()}</div>
+		{/if}
+	</div>
 
-	<div class="ml-auto flex flex-row items-center gap-4">
-		{@render right?.()}
-
-		<button
-			class="button-header size-7"
-			aria-label="Theme toggle"
-			title={$themeStore === 'system' ? 'Theme: system' : `Theme: ${$themeStore}`}
-			onclick={cycleTheme}>
-			<svg class="size-4 fill-current" fill="none" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"
-				><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10Zm0-2V4a8 8 0 1 1 0 16Z" /></svg>
+	<div class="flex shrink-0 flex-row items-center gap-2">
+		<button type="button" class="button-header icon-only" aria-label={themeLabel} title={themeLabel} onclick={cycleTheme}>
+			{#key $themeStore}
+				<span class="theme-icon flex size-4"><ThemeIcon theme={$themeStore} /></span>
+			{/key}
 		</button>
 
 		{#if customTitlebar}
 			<Popover bind:open={menuOpen} placement="bottom-end" offsetPx={6}>
 				{#snippet trigger()}
-					<button type="button" class="button-header size-7" aria-label="Menu">
-						<svg class="size-4" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"
-							><path stroke-linecap="round" d="M4 7h16M4 12h16M4 17h16" /></svg>
+					<button type="button" class="button-header icon-only" aria-label="Menu" title="Menu" aria-expanded={menuOpen}>
+						<Navigation />
 					</button>
 				{/snippet}
 
@@ -84,18 +86,20 @@
 				</div>
 			</Popover>
 
-			<div class="flex items-center gap-0.5">
-				<button class="button-header size-7" aria-label="Minimize" onclick={() => win?.minimize()}>
-					<svg class="size-4" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"
-						><path stroke-linecap="round" d="M5 12h14" /></svg>
+			<div class="flex shrink-0 items-center gap-0.5">
+				<button type="button" class="button-header icon-only" aria-label="Minimize" title="Minimize" onclick={() => win?.minimize()}>
+					<Minus class="size-4" />
 				</button>
-				<button class="button-header size-7" aria-label="Maximize" onclick={() => win?.toggleMaximize()}>
-					<svg class="size-3.5" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"
-						><rect x="5" y="5" width="14" height="14" rx="2" /></svg>
+				<button type="button" class="button-header icon-only" aria-label="Maximize" title="Maximize" onclick={() => win?.toggleMaximize()}>
+					<Maximize />
 				</button>
-				<button class="button-header size-7 hover:!bg-red-500 hover:!text-white" aria-label="Close" onclick={() => win?.close()}>
-					<svg class="size-4" fill="none" stroke="currentColor" stroke-width="1.6" viewBox="0 0 24 24"
-						><path stroke-linecap="round" d="M6 6l12 12M18 6 6 18" /></svg>
+				<button
+					type="button"
+					class="button-header icon-only hover:!bg-red-500 hover:!text-white"
+					aria-label="Close"
+					title="Close"
+					onclick={() => win?.close()}>
+					<Dismiss />
 				</button>
 			</div>
 		{/if}
@@ -115,3 +119,12 @@
 {/if}
 
 <AnnouncementBanner />
+
+<style>
+	.header-content {
+		scrollbar-width: none;
+	}
+	.header-content::-webkit-scrollbar {
+		display: none;
+	}
+</style>

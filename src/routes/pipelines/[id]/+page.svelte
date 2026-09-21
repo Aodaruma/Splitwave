@@ -10,6 +10,7 @@
 	import { SnapshotHistory, SavedIndicator, UndoRedo } from '$lib/modules/flow/ui';
 	import { Toaster } from 'svelte-french-toast';
 	import { isFromFuture } from '$lib/modules/pipeline/migrations';
+	import { ArrowLeft } from '$lib/components/icons';
 
 	let pipeline = $state<Pipeline | null>(null);
 	let notFound = $state(false);
@@ -80,11 +81,14 @@
 
 <Header>
 	{#snippet left()}
-		<div class="flex items-center gap-3">
-			<a href="/" class="button-header px-4 text-sm">← Back</a>
+		<div class="flex min-w-36 items-center gap-2">
+			<a href="/" class="button-header" aria-label="Back to pipelines" title="Back to pipelines"><ArrowLeft class="size-4 shrink-0" /> Back</a>
 			{#if pipeline}
-				<div class="relative">
-					<span bind:this={nameMirror} class="pointer-events-none invisible absolute top-0 left-0 px-2.5 whitespace-pre" aria-hidden="true">
+				<div class="relative max-w-64 min-w-0 overflow-hidden">
+					<span
+						bind:this={nameMirror}
+						class="pointer-events-none invisible absolute top-0 left-0 px-2.5 text-[13px] whitespace-pre"
+						aria-hidden="true">
 						{pipeline.name}
 					</span>
 					<input
@@ -92,7 +96,9 @@
 						bind:value={pipeline.name}
 						oninput={onNameInput}
 						maxlength={MAX_NAME_LENGTH}
-						class="input-base !transition-none"
+						aria-label="Pipeline name"
+						title={pipeline.name}
+						class="input-base h-7 max-w-full min-w-0 rounded-md text-[13px] text-ellipsis transition-colors focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset motion-reduce:transition-none"
 						style:width="{nameWidth}px" />
 				</div>
 			{/if}
@@ -100,7 +106,7 @@
 	{/snippet}
 
 	{#snippet right()}
-		<div class="flex items-center gap-3">
+		<div class="flex shrink-0 items-center gap-2">
 			{#if audioStore.isRunning}
 				<RunningTimer />
 				<LatencyBadge />

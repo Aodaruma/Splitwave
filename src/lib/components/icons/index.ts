@@ -54,3 +54,6 @@ export { default as Reverb } from './reverb.svelte';
 export { default as Balance } from './balance.svelte';
 export { default as WindowOff } from './window_off.svelte';
 export { default as ArrowSwap } from './arrow_swap.svelte';
+export { default as Navigation } from './navigation.svelte';
+export { default as Maximize } from './maximize.svelte';
+export { default as ThemeIcon } from './theme.svelte';

@@ -36,14 +36,12 @@
 
 <Popover bind:open placement="bottom-end" offsetPx={6}>
 	{#snippet trigger()}
-		<button
-			type="button"
-			class="flex h-7 items-center gap-1.5 rounded-md border border-neutral-300 bg-neutral-100 px-3 text-xs text-neutral-1100 transition-colors hover:bg-neutral-200">
+		<button type="button" class="button-header" aria-label="Snapshot history" aria-expanded={open} title="Snapshot history">
 			<span>History</span>
-			<span class="rounded bg-neutral-300 px-1 py-1 font-mono text-[10px] leading-none text-neutral-1000 tabular-nums">
+			<span class="min-w-[2ch] rounded bg-neutral-300 px-1 py-0.5 text-center font-mono text-[11px] leading-none text-neutral-1000 tabular-nums">
 				{snapshots.length}
 			</span>
-			<ChevronDown class="h-3 w-3 opacity-60" />
+			<ChevronDown class="size-4 shrink-0 opacity-60" />
 		</button>
 	{/snippet}
 

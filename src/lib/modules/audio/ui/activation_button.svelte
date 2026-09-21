@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { audioStore } from '../stores.svelte';
 	import { pipelineStore } from '$lib/modules/pipeline/stores.svelte';
+	import { Play, Stop } from '$lib/components/icons';
 
 	let { pipelineId }: { pipelineId: string } = $props();
 
 	let busy = $state(false);
+	let label = $derived(audioStore.isRunning ? 'Stop' : 'Activate');
 
 	async function toggle() {
 		if (busy) return;
@@ -28,12 +30,21 @@
 	}
 </script>
 
-<button class={['button-main primary rounded-lg px-4 py-0', !audioStore.isRunning && 'green', audioStore.isRunning && 'red']} disabled={busy} onclick={toggle}>
-	{#if busy}
-		…
-	{:else if audioStore.isRunning}
-		Stop
+<button
+	type="button"
+	class={['button-header', audioStore.isRunning ? 'red' : 'green']}
+	aria-label={label}
+	aria-busy={busy}
+	title={label}
+	disabled={busy}
+	onclick={toggle}>
+	{#if audioStore.isRunning}
+		<Stop class="size-4 shrink-0" />
 	{:else}
-		Activate
+		<Play class="size-4 shrink-0" />
 	{/if}
+	<span class="grid">
+		<span class="invisible col-start-1 row-start-1" aria-hidden="true">Activate</span>
+		<span class="col-start-1 row-start-1">{label}</span>
+	</span>
 </button>

@@ -42,7 +42,7 @@
 </script>
 
 <div
-	class={['flex min-w-64 flex-col rounded-2xl border border-neutral-400 bg-neutral-200 shadow-sm', isPreview ? 'h-40 w-80' : 'h-full w-full']}
+	class={['flex min-w-64 flex-col rounded-xl border border-neutral-400 bg-neutral-200 shadow-sm', isPreview ? 'h-40 w-80' : 'h-full w-full']}
 	style:min-height={`${nodeMinHeight}px`}>
 	{#if !isPreview}
 		<NodeResizer minWidth={256} maxWidth={1200} minHeight={nodeMinHeight} maxHeight={1200} />
