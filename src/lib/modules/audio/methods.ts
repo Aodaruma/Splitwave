@@ -58,12 +58,12 @@ export const methods = {
 	isPipelineRunning: (): Promise<boolean> => invoke<boolean>('is_pipeline_running'),
 	getOutputLatency: (): Promise<number> => invoke<number>('output_latency_ms'),
 	startPipeline: (graph: StartPipelinePayload): Promise<void> =>
-		invoke('start_pipeline', { graph: { sampleRate: appSettings.pipelineSampleRate, ...graph } }),
+		invoke('start_pipeline', { graph: { sampleRate: graph.sampleRate ?? appSettings.pipelineSampleRate, nodes: graph.nodes, edges: graph.edges } }),
 	stopPipeline: (): Promise<void> => invoke('stop_pipeline'),
 	/** Hot-reconfigure a running pipeline. Errors with `NotRunning` if no
 	 *  pipeline is active — callers should fall back to `startPipeline`. */
 	reconcilePipeline: (graph: StartPipelinePayload): Promise<void> =>
-		invoke('reconcile_pipeline', { graph: { sampleRate: appSettings.pipelineSampleRate, ...graph } }),
+		invoke('reconcile_pipeline', { graph: { sampleRate: graph.sampleRate ?? appSettings.pipelineSampleRate, nodes: graph.nodes, edges: graph.edges } }),
 	/** Returns the running EQ's processing rate (null otherwise). An empty patch only queries it. */
 	updateEffect: (nodeId: string, data: Record<string, unknown>): Promise<number | null> => invoke('update_effect', { nodeId, data }),
 	/** Seek an AudioFile input. No-op when not running. */

@@ -150,4 +150,5 @@ export interface Pipeline {
 	updatedAt: number;
 	/** Schema version; absent means pre-versioning, see `pipeline/migrations`. */
 	version?: number;
+	groups?: import('./groups').GroupDocument;
 }

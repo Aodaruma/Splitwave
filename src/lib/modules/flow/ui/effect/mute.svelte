@@ -5,7 +5,6 @@
 	import Wrapper from '../node.svelte';
 	import { SpeakerMute, Dismiss } from '$lib/components/icons';
 	import Toggle from '$lib/components/toggle.svelte';
-	import { register, unregister } from '@tauri-apps/plugin-global-shortcut';
 	import { accelerator, formatAccelerator } from './_accelerator';
 	import { audioStore } from '$lib/modules/audio/stores.svelte';
 	import { Combobox, RescanButton } from '$lib/modules/form/ui';
@@ -48,45 +47,6 @@
 		flow.updateNodeData(id, { pushToTalk: enabled });
 		if (enabled) setMuted(true, true);
 	}
-
-	// Deriving the primitives keeps the effect from re-registering on every
-	// `muted` write: xyflow replaces the whole `data` object on each update.
-	let hotkey = $derived(data.hotkey);
-	let pushToTalk = $derived(data.pushToTalk ?? false);
-
-	$effect(() => {
-		if (!hotkey) return;
-		const key = hotkey;
-		const ptt = pushToTalk;
-
-		let live = true;
-		// A leftover registration from a previous mount (HMR, node re-render)
-		// makes `register` fail with "already registered"; clear it first.
-		unregister(key)
-			.catch(() => {})
-			.then(() => {
-				if (!live) return;
-				return register(key, (e) => {
-					if (!live) return;
-					if (ptt) {
-						setMuted(e.state === 'Released', true);
-					} else if (e.state === 'Pressed') {
-						toggle();
-					}
-				});
-			})
-			.then(() => {
-				if (live) bindError = '';
-			})
-			.catch((err) => {
-				if (live) bindError = String(err);
-			});
-
-		return () => {
-			live = false;
-			unregister(key).catch(() => {});
-		};
-	});
 
 	function capture(e: KeyboardEvent) {
 		e.preventDefault();
@@ -175,8 +135,8 @@
 		{/if}
 	</div>
 
-	{#if bindError}
-		<p class="mt-1 w-40 text-[10px] break-words text-red-500">{bindError}</p>
+	{#if bindError || (data.hotkey && audioStore.hotkeyErrors[data.hotkey])}
+		<p class="mt-1 w-40 text-[10px] break-words text-red-500">{bindError || audioStore.hotkeyErrors[data.hotkey ?? '']}</p>
 	{/if}
 
 	{#if data.hotkey}

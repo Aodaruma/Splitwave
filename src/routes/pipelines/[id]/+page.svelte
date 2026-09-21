@@ -14,6 +14,7 @@
 	let pipeline = $state<Pipeline | null>(null);
 	let notFound = $state(false);
 	let stale = $state(false);
+	let loadError = $state('');
 
 	$effect(() => {
 		const id = page.params.id;
@@ -30,7 +31,9 @@
 			} else {
 				pipeline = p;
 			}
-		})();
+		})().catch((error) => {
+			loadError = error instanceof Error ? error.message : String(error);
+		});
 	});
 
 	const MAX_NAME_LENGTH = 64;
@@ -48,9 +51,9 @@
 			// Merge with the latest editor snapshot when one exists so we don't
 			// clobber unsaved node/edge changes; otherwise persist the current
 			// pipeline object with the new name.
-			const snapshot = pipelineStore.editorActions?.getSnapshot();
-			const next = snapshot ? { ...snapshot, name: pipeline.name } : { ...pipeline, updatedAt: Date.now() };
-			pipelineStore.save(next);
+			const editor = pipelineStore.editorActions;
+			const save = editor ? editor.save() : pipelineStore.save({ ...$state.snapshot(pipeline), updatedAt: Date.now() });
+			void save.catch((error) => audioStore.reportError(error));
 		}, 500);
 	}
 
@@ -114,7 +117,9 @@
 </Header>
 
 <div class="flex min-h-0 w-full flex-1">
-	{#if notFound}
+	{#if loadError}
+		<p class="p-8 text-sm text-red-600" role="alert">{loadError}</p>
+	{:else if notFound}
 		<div class="p-8 text-sm text-gray-500">Pipeline not found.</div>
 	{:else if stale}
 		<div class="flex w-full flex-col items-start gap-4 p-8">
@@ -129,7 +134,7 @@
 			<a href="/" class="button-main primary rounded-lg text-sm">Back to pipelines</a>
 		</div>
 	{:else if pipeline}
-		<Flow.ui.Flow {pipeline} />
+		{#key pipeline.id}<Flow.ui.Flow {pipeline} />{/key}
 	{:else}
 		<div class="p-8 text-sm text-gray-500">Loading…</div>
 	{/if}

@@ -1,8 +1,9 @@
 import { methods } from './methods';
 import type { NodeKind, Pipeline } from './types';
+import type { GroupDocument } from './groups';
 
 export type ClipboardNode = {
-	kind: NodeKind;
+	kind: NodeKind | 'group';
 	data: Record<string, unknown>;
 	/** Offset from the copied group's top-left corner. */
 	dx: number;
@@ -22,14 +23,19 @@ export type ClipboardEdge = {
 export type ClipboardEntry = {
 	/** Top-left of the copied group in flow coordinates; paste offsets from here. */
 	origin: { x: number; y: number };
+	groupDocument?: GroupDocument;
+	groupPaths?: Record<number, string[]>;
 	nodes: ClipboardNode[];
 	edges: ClipboardEdge[];
 };
 
 export type EditorActions = {
+	pipelineId: string;
 	addNode: (kind: NodeKind, position?: { x: number; y: number }) => void;
 	addNodeWithData: (kind: NodeKind, data: Record<string, unknown>, position?: { x: number; y: number }) => void;
 	getSnapshot: () => Pipeline | null;
+	save: () => Promise<void>;
+	patchRuntimeNode: (id: string, patch: Record<string, unknown>) => void;
 	revertToSnapshot: (p: Pipeline) => void;
 	undo: () => void;
 	redo: () => void;
@@ -53,28 +59,34 @@ export class PipelineStore {
 		this.pipelines = await methods.list();
 	}
 
-	private async enqueueSave(id: string, write: () => Promise<void>): Promise<void> {
+	private async enqueueSave(id: string, write: () => Promise<Pipeline>): Promise<Pipeline> {
 		const save = this.pendingSave.then(async () => {
-			await write();
+			const saved = await write();
 			this.failedSaves.delete(id);
 			this.lastSavedAt = Date.now();
+			return saved;
 		});
-		this.pendingSave = save.catch((error) => {
-			this.failedSaves.set(id, error);
-		});
-		await save;
+		this.pendingSave = save.then(
+			() => {},
+			(error) => {
+				this.failedSaves.set(id, error);
+			}
+		);
+		const saved = await save;
 		await this.refresh();
+		return saved;
 	}
 
-	save(p: Pipeline): Promise<void> {
-		return this.enqueueSave(p.id, () => methods.save(p));
+	save(p: Pipeline): Promise<Pipeline> {
+		const snapshot = $state.snapshot(p);
+		return this.enqueueSave(p.id, () => methods.save(snapshot));
 	}
 
-	update(id: string, update: (p: Pipeline) => Pipeline): Promise<void> {
+	update(id: string, update: (p: Pipeline) => Pipeline): Promise<Pipeline> {
 		return this.enqueueSave(id, async () => {
 			const latest = await methods.get(id);
 			if (!latest) throw new Error('Pipeline no longer exists');
-			await methods.save(update(latest));
+			return methods.save(update(latest));
 		});
 	}
 
@@ -84,7 +96,7 @@ export class PipelineStore {
 			pending = this.pendingSave;
 			await pending;
 		} while (pending !== this.pendingSave);
-		if (this.failedSaves.size > 0) throw this.failedSaves.values().next().value;
+		if (this.failedSaves.size) throw this.failedSaves.values().next().value;
 	}
 
 	async remove(id: string): Promise<void> {

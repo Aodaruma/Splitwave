@@ -1,8 +1,7 @@
 <script lang="ts">
 	import { Background, Controls, SvelteFlow, useSvelteFlow, type Edge as XyEdge, type Node as XyNode } from '@xyflow/svelte';
 	import { createId } from '@paralleldrive/cuid2';
-	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-	import { flushSync, onDestroy, onMount, untrack } from 'svelte';
+	import { flushSync, onDestroy, onMount, setContext, untrack } from 'svelte';
 	import { platform } from '@tauri-apps/plugin-os';
 	import { modalManager } from '$lib/modules/overlay/modal';
 	import { copyGraph, offsetOrigin, pasteGraph } from '../utils/clipboard';
@@ -14,8 +13,33 @@
 	import { methods as pipelineMethods } from '$lib/modules/pipeline/methods';
 	import { audioStore } from '$lib/modules/audio/stores.svelte';
 	import { methods as audioMethods } from '$lib/modules/audio/methods';
-	import { DND_MIME, defaultDataFor, emitNodeAction, fromXyEdges, fromXyNodes, nodeTypes, parseHandle, registry, toXyEdges, toXyNodes } from '../utils';
+	import { DND_MIME, defaultDataFor, emitNodeAction, nodeTypes, parseHandle, registry } from '../utils';
 	import Sidebar from './sidebar.svelte';
+	import Group from './group.svelte';
+	import GroupBoundary from './_group_boundary.svelte';
+	import { ConfirmModal } from '$lib/modules/overlay/ui';
+	import {
+		definition,
+		dependencies,
+		documentFor,
+		expand,
+		materialize,
+		scopeAt,
+		groupSelection,
+		ungroup,
+		makeIndependent,
+		copyDefinition,
+		assertReusableInstance,
+		copyInstanceState,
+		capturePluginStates,
+		assertLiveRestore,
+		patchRuntimeNode as patchRuntime,
+		runtimeId,
+		type GroupDocument
+	} from '$lib/modules/pipeline/groups';
+	import { assertFresh, definitionContent, usageCount, validateSharedRoutes, type GroupLibrary } from '$lib/modules/pipeline/group_library';
+	import { GROUP_ACTIONS, groupView, saveGroupView } from '../utils/group_view';
+	const editorNodeTypes = { ...nodeTypes, group: Group, groupBoundary: GroupBoundary };
 	import ChannelEdge from './_channel_edge.svelte';
 	import ConnectionLine from './_connection_line.svelte';
 	import EdgeRectSelect from './_edge_rect_select.svelte';
@@ -28,24 +52,134 @@
 	import type { Component } from 'svelte';
 
 	let { pipeline }: { pipeline: Pipeline } = $props();
+	let groupDocument = $state.raw<GroupDocument>(untrack(() => documentFor($state.snapshot(pipeline))));
+	let groupPath = $state.raw<string[]>([]);
+	let groupLibrary = $state.raw<GroupLibrary>({ version: 3, pipelines: {}, definitions: {} });
+	let chooserOpen = $state(false);
+	let chooserId = $state('');
+	let chooserLinked = $state(false);
+	let chooserItems = $derived(Object.values(groupLibrary.definitions));
 
 	const flow = useSvelteFlow();
 	const isMac = platform() === 'macos';
 	let scrollPans = $derived(appSettings.canvasScroll === 'pan' || (appSettings.canvasScroll === 'auto' && isMac));
 	let editorElement: HTMLDivElement;
 
-	function sanitizeEdges(xyNodes: XyNode[], xyEdges: XyEdge[]): XyEdge[] {
-		const ids = new Set(xyNodes.map((n) => n.id));
-		return xyEdges.filter((e) => ids.has(e.source) && ids.has(e.target));
-	}
+	let nodes = $state.raw<XyNode[]>(untrack(() => groupView(groupDocument, []).nodes));
+	let edges = $state.raw<XyEdge[]>(untrack(() => groupView(groupDocument, []).edges));
 
-	let nodes = $state.raw<XyNode[]>(untrack(() => toXyNodes(pipeline.nodes)));
-	let edges = $state.raw<XyEdge[]>(
-		untrack(() => {
-			const n = toXyNodes(pipeline.nodes);
-			return sanitizeEdges(n, toXyEdges(pipeline.edges));
-		})
-	);
+	function localNodeId(id: string) {
+		const d = scopeAt(groupDocument, groupPath);
+		return d.nodes.find((n) => (n.kind === 'group' ? n.id === id : runtimeId(groupDocument, groupPath, n.id) === id))?.id ?? id;
+	}
+	function showScope() {
+		const view = groupView(groupDocument, groupPath);
+		nodes = view.nodes;
+		edges = view.edges;
+		seenEdgeIds = new Set(edges.map((e) => e.id));
+		channelSelection.clear();
+	}
+	function documentEdit(edit: (doc: GroupDocument) => void) {
+		try {
+			const next = documentFor(getSnapshot());
+			edit(next);
+			expand(next);
+			const all = { ...groupLibrary.definitions, ...next.definitions };
+			for (const p of Object.values(groupLibrary.pipelines))
+				if (p.id !== pipeline.id && p.groups) expand({ ...structuredClone(p.groups), definitions: all });
+			editGraph(() => {
+				groupDocument = next;
+				showScope();
+			});
+		} catch (error) {
+			audioStore.reportError(error);
+		}
+	}
+	function navigate(path: string[]) {
+		try {
+			groupDocument = documentFor(getSnapshot());
+			scopeAt(groupDocument, path);
+			groupPath = path;
+			showScope();
+			closeContextMenu();
+			void flow.fitView();
+		} catch (error) {
+			audioStore.reportError(error);
+		}
+	}
+	function openGroup(id: string) {
+		navigate([...groupPath, id]);
+	}
+	function collapseSelection() {
+		const ids = nodes.filter((n) => n.selected && n.type !== 'groupBoundary').map((n) => localNodeId(n.id));
+		if (ids.length) documentEdit((doc) => groupSelection(doc, groupPath, ids));
+	}
+	function groupUsage(id: string) {
+		const p = getSnapshot();
+		return usageCount({ ...groupLibrary, pipelines: { ...groupLibrary.pipelines, [p.id]: p } }, id);
+	}
+	setContext(GROUP_ACTIONS, {
+		open: openGroup,
+		usage: groupUsage,
+		rename: (id: string, name: string) =>
+			documentEdit((doc) => {
+				const n = scopeAt(doc, groupPath).nodes.find((n) => n.id === id);
+				if (n?.kind === 'group' && name.trim()) definition(doc, n.data.definition).name = name.trim();
+			}),
+		port: (id: string, side: 'inputs' | 'outputs', port: string, action: string, label?: string) =>
+			documentEdit((doc) => {
+				const n = scopeAt(doc, groupPath).nodes.find((n) => n.id === id);
+				if (n?.kind !== 'group') return;
+				const ports = definition(doc, n.data.definition)[side];
+				const index = ports.findIndex((p) => p.id === port);
+				if (index < 0) return;
+				if (action === 'label') ports[index].label = label?.trim() || 'Audio';
+				else if (action === 'remove') ports.splice(index, 1);
+				else {
+					const to = index + (action === 'up' ? -1 : 1);
+					if (to >= 0 && to < ports.length) [ports[index], ports[to]] = [ports[to], ports[index]];
+				}
+			})
+	});
+	async function openChooser() {
+		try {
+			groupLibrary = await pipelineMethods.library();
+			chooserId = Object.keys(groupLibrary.definitions)[0] ?? '';
+			chooserOpen = true;
+		} catch (error) {
+			audioStore.reportError(error);
+		}
+	}
+	function insertGroup() {
+		if (!chooserId) return;
+		documentEdit((doc) => {
+			const available = { ...groupLibrary.definitions, ...doc.definitions };
+			const chosen = dependencies({ ...doc, definitions: available }, chooserId);
+			for (const [id, d] of Object.entries(chosen)) doc.definitions[id] ??= structuredClone(d);
+			assertReusableInstance(doc, chooserId);
+			const id = chooserLinked ? chooserId : copyDefinition(doc, chooserId);
+			const d = definition(doc, id);
+			if (!d.inputs.length && !d.outputs.length) {
+				for (const n of d.nodes) {
+					if (n.kind === 'group') continue;
+					const category = registry[n.kind].category;
+					const side = category === 'input' ? 'outputs' : category === 'output' ? 'inputs' : null;
+					if (!side) continue;
+					const wired = d.edges
+						.filter((e) => (side === 'inputs' ? e.target === n.id : e.source === n.id))
+						.map((e) => (side === 'inputs' ? e.targetHandle : e.sourceHandle));
+					const handles = [...new Set(wired)];
+					for (const handle of handles)
+						d[side].push({ id: createId(), label: registry[n.kind].label + ' · ' + (handle ?? 'Audio'), node: n.id, handle });
+				}
+			}
+			const instance = createId();
+			scopeAt(doc, groupPath).nodes.push({ id: instance, kind: 'group', data: { definition: id }, position: { x: 150, y: 150 } });
+			const source = Object.values(groupLibrary.pipelines).find((p) => p.groups?.root === chooserId);
+			if (source?.groups) copyInstanceState(source.groups, [], doc, [...groupPath, instance]);
+		});
+		chooserOpen = false;
+	}
 
 	// Fresh edges only: an already-wired armed channel would re-fire the fan-out.
 	// Not `onbeforeconnect` -- xyflow 1.5.2 throws on pointer-up when it is set.
@@ -146,8 +280,13 @@
 	}
 
 	function deleteNode(nodeId: string) {
-		nodes = nodes.filter((n) => n.id !== nodeId);
-		edges = edges.filter((e) => e.source !== nodeId && e.target !== nodeId);
+		documentEdit((doc) => {
+			const d = scopeAt(doc, groupPath),
+				local = localNodeId(nodeId);
+			if ([...d.inputs, ...d.outputs].some((p) => p.node === local)) throw new Error('Remove the exposed group port before deleting this node.');
+			d.nodes = d.nodes.filter((n) => n.id !== local);
+			d.edges = d.edges.filter((e) => e.source !== local && e.target !== local);
+		});
 	}
 
 	function deleteEdge(edgeId: string) {
@@ -155,10 +294,22 @@
 	}
 
 	function copyEntry(group: XyNode[]) {
-		return copyGraph(
-			group.map((n) => ({ ...n, data: $state.snapshot(n.data) })),
+		const entry = copyGraph(
+			group.filter((n) => n.type !== 'groupBoundary').map((n) => ({ ...n, data: $state.snapshot(n.data) })),
 			edges
 		);
+		if (entry) {
+			const p = getSnapshot();
+			entry.groupDocument = structuredClone(p.groups!);
+			entry.groupPaths = {};
+			group
+				.filter((n) => n.type !== 'groupBoundary')
+				.forEach((n, index) => {
+					if (n.type === 'group') entry.groupPaths![index] = [...groupPath, n.id];
+					if (n.type === 'plugin') entry.nodes[index].data = structuredClone(p.nodes.find((node) => node.id === n.id)!.data);
+				});
+		}
+		return entry;
 	}
 
 	function copyNodes(group: XyNode[]) {
@@ -174,7 +325,7 @@
 		nodes = nodes.map((n) => (n.selected ? n : { ...n, selected: true }));
 	}
 
-	function insertCopy(entry: NonNullable<typeof pipelineStore.clipboard>, origin: { x: number; y: number }) {
+	function insertCopy(entry: NonNullable<typeof pipelineStore.clipboard>, origin: { x: number; y: number }, linked = false) {
 		const graph = pasteGraph(
 			$state.snapshot(entry),
 			origin,
@@ -182,26 +333,53 @@
 			entry.edges.map(() => createId()),
 			appSettings.snapToGrid ? appSettings.gridSize : undefined
 		);
+		const plain = $state.snapshot(entry);
+		const next = documentFor(getSnapshot());
+		Object.assign(next.definitions, Object.fromEntries(Object.entries(plain.groupDocument?.definitions ?? {}).filter(([id]) => !next.definitions[id])));
+		for (const node of graph.nodes)
+			if (node.type === 'group') {
+				const source = { ...next, definitions: { ...next.definitions, ...plain.groupDocument?.definitions } };
+				assertReusableInstance(source, String(node.data.definition));
+				const id = linked ? String(node.data.definition) : copyDefinition(source, String(node.data.definition));
+				for (const [key, d] of Object.entries(source.definitions)) if (!next.definitions[key]) next.definitions[key] = d;
+				const d = definition(next, id);
+				node.data = { definition: d.id, name: d.name, inputs: d.inputs, outputs: d.outputs };
+			}
 		editGraph(() => {
+			groupDocument = next;
 			nodes = [...nodes.map((n) => (n.selected ? { ...n, selected: false } : n)), ...graph.nodes];
 			// Programmatic copies must not trigger the armed-handle fan-out.
 			graph.edges.forEach((e) => seenEdgeIds.add(e.id));
 			edges = [...edges.map((e) => (e.selected ? { ...e, selected: false } : e)), ...graph.edges];
+			const complete = documentFor(getSnapshot());
+			graph.nodes.forEach((node, index) => {
+				const sourcePath = plain.groupPaths?.[index];
+				if (sourcePath && plain.groupDocument) copyInstanceState(plain.groupDocument, sourcePath, complete, [...groupPath, node.id]);
+			});
+			groupDocument = complete;
 		});
 	}
 
-	function duplicateSelection() {
-		const entry = copyEntry(nodes.filter((n) => n.selected));
-		if (!entry) return;
-		insertCopy(entry, offsetOrigin(entry.origin, appSettings.snapToGrid ? appSettings.gridSize : undefined));
+	function duplicateSelection(linked = false) {
+		try {
+			const entry = copyEntry(nodes.filter((n) => n.selected));
+			if (!entry) return;
+			insertCopy(entry, offsetOrigin(entry.origin, appSettings.snapToGrid ? appSettings.gridSize : undefined), linked);
+		} catch (error) {
+			audioStore.reportError(error);
+		}
 	}
 
 	function pasteAt(position?: { x: number; y: number }) {
-		const c = pipelineStore.clipboard;
-		if (!c || c.nodes.length === 0) return;
-		const origin = position ?? offsetOrigin(c.origin, appSettings.snapToGrid ? appSettings.gridSize : undefined);
-		insertCopy(c, origin);
-		pipelineStore.clipboard = { ...c, origin };
+		try {
+			const c = pipelineStore.clipboard;
+			if (!c || c.nodes.length === 0) return;
+			const origin = position ?? offsetOrigin(c.origin, appSettings.snapToGrid ? appSettings.gridSize : undefined);
+			insertCopy(c, origin);
+			pipelineStore.clipboard = { ...c, origin };
+		} catch (error) {
+			audioStore.reportError(error);
+		}
 	}
 
 	function toggleGrid() {
@@ -257,7 +435,18 @@
 
 	function audioPorts(id: string, side: 'source' | 'target'): AudioPorts {
 		const handles = flow.getInternalNode(id)?.internals.handleBounds?.[side] ?? [];
-		return { id, handles: handles.map((h) => ({ id: h.id ?? null, y: h.y })), channels: channelPorts.get(id)?.[side] };
+		const node = scopeAt(groupDocument, groupPath).nodes.find((n) => n.id === id);
+		const portSide = side === 'source' ? 'outputs' : 'inputs';
+		function semantic(d: ReturnType<typeof scopeAt>, nodeId: string, handle?: string): string | null {
+			const child = d.nodes.find((n) => n.id === nodeId);
+			if (child?.kind !== 'group') return handle ?? null;
+			const inner = definition(groupDocument, child.data.definition);
+			const port = inner[portSide].find((p) => p.id === handle);
+			return port ? semantic(inner, port.node, port.handle) : null;
+		}
+		const d = node?.kind === 'group' ? definition(groupDocument, node.data.definition) : null;
+		const ordered = d?.[portSide].map((p) => ({ id: p.id, handle: semantic(d, p.node, p.handle) }));
+		return { id, handles: handles.map((h) => ({ id: h.id ?? null, y: h.y })), channels: channelPorts.get(id)?.[side], ordered };
 	}
 
 	function onConnectEnd(event: PointerEvent) {
@@ -287,8 +476,56 @@
 		const items: MenuItem[] = [];
 		const id = node.id;
 		const data = (node.data ?? {}) as Record<string, unknown>;
-		const kind = node.type as NodeKind | undefined;
+		const kind = node.type as NodeKind | 'group' | undefined;
 
+		if (kind === 'group')
+			items.push(
+				{ label: 'Open group', action: () => openGroup(id) },
+				{ label: 'Ungroup', action: () => documentEdit((doc) => ungroup(doc, groupPath, id)) },
+				{ label: 'Make Independent', action: () => documentEdit((doc) => makeIndependent(doc, groupPath, id)) }
+			);
+		items.push(
+			{ label: 'Group selected nodes', shortcut: '⌘G', action: collapseSelection },
+			{
+				label: 'Duplicate',
+				shortcut: '⌘D',
+				action: () => {
+					if (!node.selected) nodes = nodes.map((n) => ({ ...n, selected: n.id === id }));
+					duplicateSelection();
+				}
+			},
+			{
+				label: 'Duplicate linked group',
+				shortcut: 'Alt+D',
+				disabled: kind !== 'group',
+				action: () => {
+					nodes = nodes.map((n) => ({ ...n, selected: n.id === id }));
+					duplicateSelection(true);
+				}
+			}
+		);
+		if (groupPath.length && node.type !== 'groupBoundary')
+			for (const [side, type] of [
+				['inputs', 'target'],
+				['outputs', 'source']
+			] as const) {
+				for (const handle of flow.getInternalNode(id)?.internals.handleBounds?.[type] ?? [])
+					items.push({
+						label: 'Expose ' + (side === 'inputs' ? 'input' : 'output') + ' · ' + (handle.id ?? 'Audio'),
+						action: () =>
+							documentEdit((doc) => {
+								const d = scopeAt(doc, groupPath),
+									local = localNodeId(id);
+								if (!d[side].some((p) => p.node === local && p.handle === (handle.id ?? undefined)))
+									d[side].push({
+										id: createId(),
+										node: local,
+										handle: handle.id ?? undefined,
+										label: (kind === 'group' ? 'Group' : (registry[kind as NodeKind]?.label ?? 'Audio')) + ' · ' + (handle.id ?? 'Audio')
+									});
+							})
+					});
+			}
 		switch (kind) {
 			case 'audioFile':
 				items.push({
@@ -444,20 +681,71 @@
 	}
 
 	function getSnapshot(): Pipeline {
-		return {
-			id: pipeline.id,
-			name: pipeline.name,
-			createdAt: pipeline.createdAt,
-			nodes: fromXyNodes(nodes),
-			edges: fromXyEdges(edges),
-			updatedAt: Date.now()
-		};
+		const doc = structuredClone(groupDocument);
+		saveGroupView(
+			doc,
+			groupPath,
+			nodes.map((n) => ({ ...n, data: $state.snapshot(n.data) })),
+			edges
+		);
+		const snapshot = materialize({ ...$state.snapshot(pipeline), updatedAt: Date.now() }, doc);
+		validateSharedRoutes({ ...groupLibrary, pipelines: { ...groupLibrary.pipelines, [snapshot.id]: snapshot } });
+		groupDocument.runtimeIds = { ...doc.runtimeIds };
+		groupDocument.definitions = doc.definitions;
+		return snapshot;
 	}
-
+	async function restoreSnapshot(p: Pipeline): Promise<boolean> {
+		try {
+			await commitQueue;
+			const library = await pipelineMethods.library();
+			p = structuredClone($state.snapshot(p));
+			if (!p.groups) {
+				const root = groupDocument.root;
+				if (usageCount(library, root) > 1)
+					throw new Error('This legacy snapshot predates shared groups and cannot replace a pipeline used by other groups.');
+				p = materialize(p);
+			}
+			for (const d of Object.values(p.groups?.definitions ?? {}))
+				if (usageCount(library, d.id) <= 1 && library.definitions[d.id]) {
+					d.revision = library.definitions[d.id].revision;
+					acknowledged.set(d.id, d.revision);
+				}
+			assertFresh(p, library.definitions);
+			if (audioStore.isRunning && audioStore.runningPipelineId === p.id && !audioStore.shuttingDown) assertLiveRestore(getSnapshot(), p);
+			const changed = Object.values(p.groups?.definitions ?? {}).filter(
+				(d) => library.definitions[d.id] && definitionContent(d) !== definitionContent(library.definitions[d.id])
+			);
+			const shared = changed.filter(
+				(d) => usageCount(library, d.id) > 1 || Object.values(library.pipelines).some((other) => other.id !== p.id && other.groups?.definitions[d.id])
+			);
+			if (
+				shared.length &&
+				(await modalManager.open('', ConfirmModal, {
+					message: 'Restore shared groups: ' + shared.map((d) => d.name).join(', ') + '? This changes every linked use in this local library.',
+					confirmLabel: 'Restore all linked uses',
+					canClose: true
+				})) !== true
+			)
+				return false;
+			groupDocument = documentFor(capturePluginStates(p));
+			try {
+				scopeAt(groupDocument, groupPath);
+			} catch {
+				groupPath = [];
+			}
+			showScope();
+			return true;
+		} catch (error) {
+			audioStore.reportError(error);
+			return false;
+		}
+	}
 	function revertToSnapshot(p: Pipeline) {
-		const n = toXyNodes(p.nodes);
-		nodes = n;
-		edges = sanitizeEdges(n, toXyEdges(p.edges));
+		void restoreSnapshot(p);
+	}
+	function patchRuntimeNode(id: string, patch: Record<string, unknown>) {
+		groupDocument = documentFor(patchRuntime(getSnapshot(), id, patch));
+		showScope();
 	}
 
 	// Capture on the debounced save tick when enough time has passed --
@@ -466,7 +754,7 @@
 	let lastSnapshotSig = '';
 	let lastSnapshotAt = 0;
 	function snapshotSignature(p: Pipeline): string {
-		return JSON.stringify({ nodes: p.nodes, edges: p.edges });
+		return JSON.stringify({ nodes: p.nodes, edges: p.edges, groups: p.groups && Object.values(p.groups.definitions).map(definitionContent) });
 	}
 
 	// Undo/redo history. Cursor points at the current state inside `history`;
@@ -488,24 +776,46 @@
 		cursor = trimmed.length - 1;
 	}
 
+	const acknowledged = new Map<string, number>();
+	let commitQueue: Promise<void> = Promise.resolve();
 	function commit(snap: Pipeline) {
-		pipelineStore.save(snap);
-		const sig = snapshotSignature(snap);
-		const now = Date.now();
-		if (sig !== lastSnapshotSig && now - lastSnapshotAt >= SNAPSHOT_MIN_SPACING_MS) {
-			pipelineMethods.addSnapshot(snap).then(() => {
+		const saved = commitQueue.then(async () => {
+			for (const d of Object.values(snap.groups?.definitions ?? {})) {
+				const rev = acknowledged.get(d.id);
+				if (rev !== undefined) d.revision = rev;
+			}
+			const saved = await pipelineStore.save(snap);
+			for (const d of Object.values(saved.groups?.definitions ?? {})) {
+				acknowledged.set(d.id, d.revision);
+				if (groupDocument.definitions[d.id]) groupDocument.definitions[d.id].revision = d.revision;
+				for (const h of history) if (h.groups?.definitions[d.id]) h.groups.definitions[d.id].revision = d.revision;
+			}
+			groupLibrary = await pipelineMethods.library();
+			const sig = snapshotSignature(saved),
+				now = Date.now();
+			if (sig !== lastSnapshotSig && now - lastSnapshotAt >= SNAPSHOT_MIN_SPACING_MS) {
+				await pipelineMethods.addSnapshot(saved);
 				lastSnapshotSig = sig;
 				lastSnapshotAt = now;
-			});
-		}
+			}
+		});
+		commitQueue = saved.catch((error) => audioStore.reportError(error));
+
 		captureIfChanged(snap);
+		return saved;
 	}
 
 	function flushPendingCommit() {
 		if (saveTimer === undefined) return;
 		clearTimeout(saveTimer);
 		saveTimer = undefined;
-		untrack(() => commit(getSnapshot()));
+		untrack(() => {
+			try {
+				commit(getSnapshot());
+			} catch (error) {
+				audioStore.reportError(error);
+			}
+		});
 	}
 
 	function editGraph(edit: () => void) {
@@ -518,24 +828,29 @@
 		commit(getSnapshot());
 	}
 
-	function undo() {
+	async function undo() {
 		flushPendingCommit();
 		if (cursor === 0) return;
-		cursor -= 1;
-		revertToSnapshot(history[cursor]);
+		if (await restoreSnapshot(history[cursor - 1])) cursor -= 1;
 	}
 
-	function redo() {
+	async function redo() {
 		flushPendingCommit();
 		if (cursor >= history.length - 1) return;
-		cursor += 1;
-		revertToSnapshot(history[cursor]);
+		if (await restoreSnapshot(history[cursor + 1])) cursor += 1;
 	}
 
 	pipelineStore.editorActions = {
+		pipelineId: untrack(() => pipeline.id),
 		addNode,
 		addNodeWithData,
 		getSnapshot,
+		save: () => {
+			clearTimeout(saveTimer);
+			saveTimer = undefined;
+			return commit(getSnapshot());
+		},
+		patchRuntimeNode,
 		revertToSnapshot,
 		undo,
 		redo,
@@ -553,7 +868,13 @@
 		clearTimeout(saveTimer);
 		saveTimer = setTimeout(() => {
 			saveTimer = undefined;
-			untrack(() => commit(getSnapshot()));
+			untrack(() => {
+				try {
+					commit(getSnapshot());
+				} catch (error) {
+					audioStore.reportError(error);
+				}
+			});
 		}, 500);
 		return () => clearTimeout(saveTimer);
 	});
@@ -565,20 +886,14 @@
 		lastSnapshotAt = Date.now() - SNAPSHOT_MIN_SPACING_MS - 1;
 	});
 
-	// Every node's data (minus canvas geometry) and every edge with its handles.
-	// The backend reconcile classifies the resend, so a live-param-only change is
-	// a no-op there and needs no field-by-field gate here.
+	// Navigation must never turn the visible scope into the engine graph.
 	function routingSignature(): string {
-		return JSON.stringify({
-			nodes: nodes.map((n) => ({ id: n.id, type: n.type, data: n.data })),
-			edges: edges.map((e) => ({
-				id: e.id,
-				source: e.source,
-				sourceHandle: e.sourceHandle ?? null,
-				target: e.target,
-				targetHandle: e.targetHandle ?? null
-			}))
-		});
+		try {
+			const p = getSnapshot();
+			return JSON.stringify({ nodes: p.nodes.map((n) => ({ id: n.id, kind: n.kind, data: n.data })), edges: p.edges });
+		} catch {
+			return '';
+		}
 	}
 
 	let lastRoutingSig = untrack(routingSignature);
@@ -589,15 +904,12 @@
 		const sig = routingSignature();
 		if (sig === lastRoutingSig) return;
 		lastRoutingSig = sig;
-		if (!audioStore.isRunning) return;
+		if (!audioStore.isRunning || audioStore.runningPipelineId !== pipeline.id) return;
 		clearTimeout(restartTimer);
 		restartTimer = setTimeout(() => {
 			untrack(async () => {
 				try {
-					await audioStore.restartPipeline({
-						nodes: fromXyNodes(nodes),
-						edges: fromXyEdges(edges)
-					});
+					await audioStore.restartPipeline(getSnapshot());
 				} catch (e) {
 					audioStore.reportError(e);
 				}
@@ -618,6 +930,34 @@
 		if (e.key === 'Escape') {
 			cancelConnect();
 			connectNotice = '';
+		}
+		if (
+			onCanvas &&
+			!e.repeat &&
+			e.altKey &&
+			!e.ctrlKey &&
+			!e.metaKey &&
+			e.key.toLowerCase() === 'd' &&
+			nodes.some((n) => n.selected && n.type === 'group')
+		) {
+			e.preventDefault();
+			duplicateSelection(true);
+			return;
+		}
+		if (onCanvas && !e.repeat && !e.altKey) {
+			if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'g') {
+				e.preventDefault();
+				collapseSelection();
+				return;
+			}
+			if (e.key === 'Enter') {
+				const n = nodes.find((n) => n.selected && n.type === 'group');
+				if (n) {
+					e.preventDefault();
+					openGroup(n.id);
+					return;
+				}
+			}
 		}
 		const shortcut = canvasShortcut(e, onCanvas && !connectDrag && !e.defaultPrevented);
 		if (shortcut) {
@@ -657,46 +997,17 @@
 		}
 	}
 
-	// Auto-stop the pipeline when every AudioFile source has reached EOF and
-	// no live capture (mic / system / app) is running. Mixed graphs keep
-	// running so live recording survives the file finishing.
-	const LIVE_INPUT_TYPES = ['microphone', 'systemAudio', 'appAudio'];
-	let audioFileDone = $state<Record<string, boolean>>({});
-
-	$effect(() => {
-		if (!audioStore.isRunning) {
-			audioFileDone = {};
-		}
-	});
-
-	interface AudioFileProgress {
-		nodeId: string;
-		stopped: boolean;
-	}
-
 	function onBeforeUnload() {
 		flushPendingCommit();
 	}
 
-	let unlistenAudioFile: UnlistenFn | undefined;
 	onMount(() => {
 		window.addEventListener('keydown', onWindowKeyDown, { capture: true });
 		window.addEventListener('beforeunload', onBeforeUnload);
-		listen<AudioFileProgress>('audio://audio_file_progress', (e) => {
-			const { nodeId, stopped } = e.payload;
-			if (!audioStore.isRunning) return;
-			audioFileDone[nodeId] = stopped;
-			if (!stopped) return;
-			const hasLive = nodes.some((n) => LIVE_INPUT_TYPES.includes(n.type ?? ''));
-			if (hasLive) return;
-			const audioFiles = nodes.filter((n) => n.type === 'audioFile');
-			if (audioFiles.length === 0) return;
-			if (audioFiles.every((n) => audioFileDone[n.id])) {
-				audioMethods.stopPipeline().catch(() => {});
-			}
-		}).then((fn) => {
-			unlistenAudioFile = fn;
-		});
+		void pipelineMethods
+			.library()
+			.then((value) => (groupLibrary = value))
+			.catch((error) => audioStore.reportError(error));
 		return () => {
 			window.removeEventListener('keydown', onWindowKeyDown, { capture: true });
 			window.removeEventListener('beforeunload', onBeforeUnload);
@@ -706,10 +1017,10 @@
 	onDestroy(() => {
 		flushPendingCommit();
 		clearTimeout(restartTimer);
-		unlistenAudioFile?.();
-		if (pipelineStore.editorActions?.getSnapshot === getSnapshot) {
-			pipelineStore.editorActions = null;
-		}
+		// Keep runtime controls on the latest document until its save reaches the root store.
+		void commitQueue.then(() => {
+			if (pipelineStore.editorActions?.getSnapshot === getSnapshot) pipelineStore.editorActions = null;
+		});
 	});
 </script>
 
@@ -731,6 +1042,13 @@
 				e.stopPropagation();
 			}
 		}}
+		ondblclick={(event) => {
+			const id = bodyNode(event.target)?.dataset.id;
+			if (id && nodes.some((n) => n.id === id && n.type === 'group')) {
+				event.preventDefault();
+				openGroup(id);
+			}
+		}}
 		ondragover={onDragOver}
 		ondrop={onDrop}>
 		<SvelteFlow
@@ -738,7 +1056,15 @@
 			class="!bg-background"
 			bind:nodes
 			bind:edges
-			{nodeTypes}
+			nodeTypes={editorNodeTypes}
+			onbeforedelete={async ({ nodes: deleted, edges: deletedEdges }) => {
+				const d = scopeAt(groupDocument, groupPath);
+				if (deleted.some((n) => [...d.inputs, ...d.outputs].some((p) => p.node === localNodeId(n.id)))) {
+					audioStore.reportError(new Error('Remove the group port before deleting its node. Connected ports cannot be removed.'));
+					return false;
+				}
+				return { nodes: deleted.filter((n) => n.type !== 'groupBoundary'), edges: deletedEdges.filter((e) => !e.id.startsWith('$group-')) };
+			}}
 			{edgeTypes}
 			defaultEdgeOptions={{ animated: edgeSettings.animated, type: 'channel' }}
 			connectionLineComponent={ConnectionLine}
@@ -765,6 +1091,33 @@
 			<OrphanEdges onDelete={deleteEdge} />
 		</SvelteFlow>
 
+		<div class="absolute top-3 left-3 z-10 flex max-w-[70%] flex-wrap items-center gap-2 rounded border border-neutral-400 bg-neutral-100 p-2 text-xs">
+			<button onclick={() => navigate([])}>{pipeline.name}</button>
+			{#each groupPath as id, index}
+				<span>/</span><button onclick={() => navigate(groupPath.slice(0, index + 1))}
+					>{scopeAt(groupDocument, groupPath.slice(0, index + 1)).name}</button>
+			{/each}
+			{#if groupPath.length}<button onclick={() => navigate(groupPath.slice(0, -1))}>← Back</button>{/if}
+			{#if groupUsage(scopeAt(groupDocument, groupPath).id) > 1}<span>Editing {groupUsage(scopeAt(groupDocument, groupPath).id)} linked uses</span>{/if}
+			<button onclick={collapseSelection}>Group selected</button>
+			<button onclick={openChooser}>Add reusable group…</button>
+		</div>
+		{#if chooserOpen}
+			<div class="absolute top-16 left-3 z-20 flex max-w-sm flex-col gap-2 rounded border border-neutral-400 bg-neutral-100 p-3 text-xs">
+				<label
+					>Local groups and saved pipelines
+					<select class="mt-1 w-full rounded border border-neutral-400 bg-neutral-100 p-1" bind:value={chooserId}>
+						{#each chooserItems as d (d.id)}<option value={d.id}>{d.name}</option>{/each}
+					</select>
+				</label>
+				<label><input type="checkbox" bind:checked={chooserLinked} /> Linked reference — edits apply to every use</label>
+				<p>Inputs, microphones and recording destinations are kept. All groups run inside this pipeline.</p>
+				<div class="flex gap-3">
+					<button disabled={!chooserId} onclick={insertGroup}>Add {chooserLinked ? 'linked' : 'independent'} group</button><button
+						onclick={() => (chooserOpen = false)}>Cancel</button>
+				</div>
+			</div>
+		{/if}
 		<button
 			type="button"
 			class="absolute top-3 right-3 z-10 rounded-lg border border-neutral-400 bg-neutral-100 px-3 py-1.5 text-xs text-neutral-1000 shadow-sm"

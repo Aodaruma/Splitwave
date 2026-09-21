@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { coefficients, defaultEq, readEq, responseDb, frequencyPosition, positionFrequency, maxFrequency } from '../src/lib/modules/pipeline/eq';
 import { DEFAULT_NODE_DATA, withDefaults } from '../src/lib/modules/pipeline/defaults';
 import { migrate } from '../src/lib/modules/pipeline/migrations';
+import { PIPELINE_VERSION } from '../src/lib/modules/pipeline/version';
 import type { EqBand } from '../src/lib/modules/pipeline/generated/EqBand';
 import type { Pipeline } from '../src/lib/modules/pipeline/types';
 import fixtures from './fixtures/eq-response.json';
@@ -16,7 +17,7 @@ describe('EQ persistence and graph math', () => {
 		expect(withDefaults('eq', { gainsDb })).toMatchObject({ mode: 'graphic', gainsDb });
 		const p = { version: 2, nodes: [{ id: 'eq', kind: 'eq', data: { gainsDb }, position: { x: 0, y: 0 } }], edges: [] } as unknown as Pipeline;
 		const migrated = migrate(p);
-		expect(migrated.version).toBe(3);
+		expect(migrated.version).toBe(PIPELINE_VERSION);
 		expect(migrated.nodes[0].data).toMatchObject({ mode: 'graphic', gainsDb });
 		const next = defaultEq();
 		next.bands[0] = { filter: 'lowShelf', frequency: 123, gainDb: 4, q: 2, enabled: false };

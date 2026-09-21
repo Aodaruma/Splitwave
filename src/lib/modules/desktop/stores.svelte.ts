@@ -48,6 +48,7 @@ class DesktopStore {
 	}
 
 	private async saveBeforeExit(): Promise<void> {
+		await pipelineStore.editorActions?.save();
 		await pipelineStore.flushSaves();
 		const snapshot = pipelineStore.editorActions?.getSnapshot();
 		const runningId = audioStore.runningPipelineId;
@@ -77,11 +78,14 @@ class DesktopStore {
 			});
 			const editor = pipelineStore.editorActions;
 			const latest = pipelineStore.editorActions?.getSnapshot();
-			if (latest?.id === running.id) editor?.revertToSnapshot(applyStates(latest));
-			else await pipelineStore.update(running.id, applyStates);
+			if (latest?.id === running.id) {
+				for (const node of applyStates(latest).nodes) {
+					const before = latest.nodes.find((n) => n.id === node.id);
+					if (node.kind === 'plugin' && node.data.state !== before?.data.state) editor?.patchRuntimeNode(node.id, { state: node.data.state });
+				}
+			} else await pipelineStore.update(running.id, applyStates);
 		}
-		const latest = pipelineStore.editorActions?.getSnapshot();
-		if (latest) await pipelineStore.save(latest);
+		await pipelineStore.editorActions?.save();
 		await pipelineStore.flushSaves();
 		appSettings.persist();
 	}

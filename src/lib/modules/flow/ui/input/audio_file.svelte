@@ -53,28 +53,12 @@
 		channels = p.channels;
 		paused = p.paused;
 		playing = !p.stopped && !p.paused;
-		// Re-assert the loop flag on every tick: the reader starts with loop
-		// disabled and only a fresh reader reports frames 0, which can arrive
-		// before `isRunning` flips. Keeping it in sync here guarantees the
-		// reader sees the intended value well before EOF. Idempotent store.
-		if (audioStore.isRunning && data.filePath) {
-			audioMethods.setAudioFileLoop(id, data.loopEnabled).catch(() => {});
-		}
 	});
 
 	$effect(() => {
 		if (!audioStore.isRunning) {
 			playing = false;
 			paused = false;
-		}
-	});
-
-	// Toggle is a runtime atomic, not part of InputSpec -- syncing here
-	// keeps the reader's loop flag in lockstep with `data.loopEnabled`
-	// without a reconcile.
-	$effect(() => {
-		if (audioStore.isRunning && data.filePath) {
-			audioMethods.setAudioFileLoop(id, data.loopEnabled).catch(() => {});
 		}
 	});
 

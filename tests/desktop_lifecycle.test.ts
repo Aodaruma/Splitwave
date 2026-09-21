@@ -4,6 +4,7 @@ import { compileModule } from 'svelte/compiler';
 import type { AudioStateEvent, StartPipelinePayload } from '../src/lib/modules/audio/types';
 import type { Pipeline, PipelineNode } from '../src/lib/modules/pipeline/types';
 import type { EditorActions } from '../src/lib/modules/pipeline/stores.svelte';
+import { documentFor, groupSelection, materialize } from '../src/lib/modules/pipeline/groups';
 
 // Compile the real stores with Svelte's server transform: no DOM or audio devices.
 await plugin({
@@ -40,6 +41,12 @@ let activeId: string | null = null;
 let onState: (event: AudioStateEvent) => void = () => {};
 let onInputError: (event: { nodeId: string; error: string }) => void = () => {};
 const backend = {
+	updateEffect: mock(async (_id: string, _data: Record<string, unknown>) => null),
+	setInputVolume: mock(async () => {}),
+	setAudioFileLoop: mock(async () => {}),
+	setAudioFilePaused: mock(async () => {}),
+	netReceiverListen: mock(async () => {}),
+	webrtcSetIdentity: mock(async () => {}),
 	startPipeline: mock(async (_graph: StartPipelinePayload) => {}),
 	stopPipeline: mock(async () => {}),
 	reconcilePipeline: mock(async (_graph: StartPipelinePayload) => {}),
@@ -64,6 +71,7 @@ const persistence = {
 	list: async () => [...stored.values()],
 	save: mock(async (p: Pipeline) => {
 		stored.set(p.id, structuredClone(p));
+		return structuredClone(p);
 	}),
 	getActivePipelineId: mock(async () => activeId),
 	setActivePipelineId: mock(async (id: string | null) => {
@@ -110,7 +118,14 @@ const recordingNode = (): PipelineNode<'fileRecording'> => ({
 function setEditor(initial: Pipeline) {
 	let snapshot = initial;
 	pipelineStore.editorActions = {
+		pipelineId: initial.id,
 		getSnapshot: () => structuredClone(snapshot),
+		save: async () => {
+			await pipelineStore.save(snapshot);
+		},
+		patchRuntimeNode: (id: string, patch: Record<string, unknown>) => {
+			snapshot = { ...snapshot, nodes: snapshot.nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n)) };
+		},
 		revertToSnapshot: (p: Pipeline) => {
 			snapshot = p;
 		}
@@ -133,6 +148,7 @@ beforeEach(() => {
 	persistence.get.mockReset().mockImplementation(async (id) => structuredClone(stored.get(id) ?? null));
 	persistence.save.mockReset().mockImplementation(async (p) => {
 		stored.set(p.id, structuredClone(p));
+		return structuredClone(p);
 	});
 	persistence.getActivePipelineId.mockReset().mockImplementation(async () => activeId);
 	persistence.setActivePipelineId.mockClear();
@@ -151,6 +167,54 @@ afterEach(async () => {
 });
 
 describe('AudioStore operation coordination', () => {
+	it('keeps a queued push-to-talk release and resolves rapid toggles against the latest saved state', async () => {
+		stored.set('hidden', pipeline('hidden', [{ id: 'mute', kind: 'mute', data: { muted: true, bypassed: false }, position: { x: 0, y: 0 } }]));
+		const saving = deferred();
+		persistence.save.mockImplementationOnce(async (p) => {
+			await saving.promise;
+			stored.set(p.id, structuredClone(p));
+			return p;
+		});
+		const pressed = audio.patchNode('hidden', 'mute', { muted: false });
+		await until(() => persistence.save.mock.calls.length === 1);
+		const released = audio.patchNode('hidden', 'mute', { muted: true });
+		saving.resolve();
+		await Promise.all([pressed, released]);
+		expect(stored.get('hidden')!.nodes[0].data.muted).toBe(true);
+		await Promise.all([
+			audio.patchNode('hidden', 'mute', (n) => ({ muted: !n.data.muted })),
+			audio.patchNode('hidden', 'mute', (n) => ({ muted: !n.data.muted }))
+		]);
+		expect(stored.get('hidden')!.nodes[0].data.muted).toBe(true);
+	});
+
+	it('persists a recording dialog result inside a closed group before retrying activation', async () => {
+		const base = pipeline('group-recording', [recordingNode()]);
+		const doc = documentFor(base);
+		groupSelection(doc, [], ['recording']);
+		const grouped = materialize(base, doc);
+		stored.set(base.id, grouped);
+		backend.startPipeline.mockRejectedValueOnce(new Error('choose-file (node recording)'));
+		await audio.activatePipeline(base.id, grouped);
+		expect(backend.startPipeline).toHaveBeenCalledTimes(2);
+		expect(materialize(stored.get(base.id)!).nodes[0].data.filePath).toBe('recording.wav');
+		expect(backend.startPipeline.mock.calls[1][0].nodes[0].data.filePath).toBe('recording.wav');
+	});
+
+	it('captures hidden plugin state only while the expected plugin and its saved state still match', async () => {
+		stored.set('hidden', pipeline('hidden', [pluginNode()]));
+		audio.runningPipelineId = 'hidden';
+		const captured = deferred<string | null>();
+		backend.getPluginState.mockImplementationOnce(() => captured.promise);
+		const saving = audio.capturePluginState('plugin');
+		await until(() => backend.getPluginState.mock.calls.length === 1);
+		expect(backend.getPluginState).toHaveBeenCalledWith('plugin', 'bundle', 'one');
+		stored.get('hidden')!.nodes[0].data.state = 'newer-preset';
+		captured.resolve('late-capture');
+		await saving;
+		expect(stored.get('hidden')!.nodes[0].data.state).toBe('newer-preset');
+	});
+
 	it('coalesces overlapping activations without stopping the first successful start', async () => {
 		const start = deferred();
 		backend.startPipeline.mockImplementationOnce(() => start.promise);
@@ -331,7 +395,7 @@ describe('AudioStore operation coordination', () => {
 describe('exit persistence', () => {
 	it('flushes writes added while waiting and preserves failures until that pipeline is saved', async () => {
 		const store = new PipelineStore();
-		const first = deferred();
+		const first = deferred<Pipeline>();
 		persistence.save.mockImplementationOnce(() => first.promise);
 		const save = store.save(pipeline('a'));
 		const flush = store.flushSaves();
@@ -354,6 +418,7 @@ describe('exit persistence', () => {
 		persistence.save.mockImplementationOnce(async (p) => {
 			await pending.promise;
 			stored.set(p.id, structuredClone(p));
+			return p;
 		});
 		const edited = { ...pipeline('running', [pluginNode()]), name: 'latest', updatedAt: 2 };
 		const saving = pipelineStore.save(edited);
