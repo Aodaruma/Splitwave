@@ -15,10 +15,11 @@
 
 	interface Props {
 		left?: Snippet;
+		toolbar?: Snippet;
 		right?: Snippet;
 	}
 
-	let { left, right }: Props = $props();
+	let { left, toolbar, right }: Props = $props();
 
 	// macOS keeps its native menu + overlay traffic lights. Linux and Windows run
 	// decoration-less, so the header carries the window controls and the menu
@@ -53,15 +54,23 @@
 
 <header
 	data-tauri-drag-region
+	class:editor-header={!!toolbar}
 	class={['z-500 flex h-10 w-full shrink-0 flex-row items-center gap-2 border-b border-theme/5 bg-background px-1.5', customTitlebar ? 'pl-3' : 'pl-20']}>
 	<div data-tauri-drag-region class="header-content flex min-w-0 flex-1 items-center gap-3 overflow-x-auto py-1">
 		{@render left?.()}
-		{#if right}
+		{#if toolbar}
+			<div data-tauri-drag-region class="editor-toolbar flex min-w-max flex-1 items-center gap-3">
+				<div class="flex shrink-0 items-center gap-2">{@render toolbar()}</div>
+				{#if right}
+					<div class="ml-auto shrink-0">{@render right()}</div>
+				{/if}
+			</div>
+		{:else if right}
 			<div class="ml-auto shrink-0">{@render right()}</div>
 		{/if}
 	</div>
 
-	<div class="flex shrink-0 flex-row items-center gap-2">
+	<div class="window-actions flex shrink-0 flex-row items-center gap-2">
 		<button type="button" class="button-header icon-only" aria-label={themeLabel} title={themeLabel} onclick={cycleTheme}>
 			{#key $themeStore}
 				<span class="theme-icon flex size-4"><ThemeIcon theme={$themeStore} /></span>
@@ -121,10 +130,42 @@
 <AnnouncementBanner />
 
 <style>
+	.editor-header {
+		column-gap: 1.5rem;
+	}
+
 	.header-content {
 		scrollbar-width: none;
 	}
 	.header-content::-webkit-scrollbar {
 		display: none;
+	}
+
+	@media (max-width: 1199px) {
+		.editor-header {
+			display: grid;
+			height: auto;
+			min-height: 2.5rem;
+			grid-template-columns: minmax(0, 1fr) auto;
+			row-gap: 0;
+			padding-block: 0.375rem;
+		}
+
+		.editor-header .header-content {
+			display: contents;
+		}
+
+		.editor-toolbar {
+			grid-column: 1 / -1;
+			grid-row: 2;
+			min-width: 0;
+			flex-wrap: wrap;
+			padding-top: 0.5rem;
+		}
+
+		.editor-header .window-actions {
+			grid-column: 2;
+			grid-row: 1;
+		}
 	}
 </style>
