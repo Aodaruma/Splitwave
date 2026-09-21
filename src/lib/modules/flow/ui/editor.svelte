@@ -1,5 +1,14 @@
 <script lang="ts">
-	import { Background, Controls, SvelteFlow, useSvelteFlow, type Edge as XyEdge, type Node as XyNode } from '@xyflow/svelte';
+	import {
+		Background,
+		Controls,
+		SvelteFlow,
+		useSvelteFlow,
+		useNodesInitialized,
+		useViewportInitialized,
+		type Edge as XyEdge,
+		type Node as XyNode
+	} from '@xyflow/svelte';
 	import { createId } from '@paralleldrive/cuid2';
 	import { flushSync, onDestroy, onMount, setContext, untrack } from 'svelte';
 	import { platform } from '@tauri-apps/plugin-os';
@@ -45,7 +54,7 @@
 	import EdgeRectSelect from './_edge_rect_select.svelte';
 	import OrphanEdges from './_orphan_edges.svelte';
 	const edgeTypes = { channel: ChannelEdge };
-	import { Backspace, Copy, ClipboardPaste, Delete, Folder, KeyCommand, Loop, Refresh, Rewind } from '$lib/components/icons';
+	import { ArrowLeft, Backspace, Copy, ClipboardPaste, Delete, Folder, KeyCommand, Loop, Refresh, Rewind } from '$lib/components/icons';
 	import { channelCaps, channelPorts, channelSelection } from '../stores.svelte';
 	import { edgeSettings } from '../edge_settings.svelte';
 	import { Menu, MenuItem as OverlayMenuItem } from '$lib/modules/overlay/ui';
@@ -61,6 +70,17 @@
 	let chooserItems = $derived(Object.values(groupLibrary.definitions));
 
 	const flow = useSvelteFlow();
+	const measuredNodes = useNodesInitialized();
+	const viewportReady = useViewportInitialized();
+	let fitRequested = $state(true);
+	$effect(() => {
+		if (fitRequested && measuredNodes.current && viewportReady.current) {
+			fitRequested = false;
+			untrack(() => {
+				void flow.fitView();
+			});
+		}
+	});
 	const isMac = platform() === 'macos';
 	let scrollPans = $derived(appSettings.canvasScroll === 'pan' || (appSettings.canvasScroll === 'auto' && isMac));
 	let editorElement: HTMLDivElement;
@@ -102,7 +122,7 @@
 			groupPath = path;
 			showScope();
 			closeContextMenu();
-			void flow.fitView();
+			fitRequested = true;
 		} catch (error) {
 			audioStore.reportError(error);
 		}
@@ -1083,8 +1103,7 @@
 			onnodedragstart={closeContextMenu}
 			onselectionstart={closeContextMenu}
 			onmovestart={closeContextMenu}
-			snapGrid={appSettings.snapToGrid ? [appSettings.gridSize, appSettings.gridSize] : undefined}
-			fitView>
+			snapGrid={appSettings.snapToGrid ? [appSettings.gridSize, appSettings.gridSize] : undefined}>
 			<Background gap={appSettings.gridSize} patternClass="fill-neutral-200" />
 			<Controls />
 			<EdgeRectSelect />
@@ -1097,7 +1116,11 @@
 				<span>/</span><button onclick={() => navigate(groupPath.slice(0, index + 1))}
 					>{scopeAt(groupDocument, groupPath.slice(0, index + 1)).name}</button>
 			{/each}
-			{#if groupPath.length}<button onclick={() => navigate(groupPath.slice(0, -1))}>← Back</button>{/if}
+			{#if groupPath.length}<button
+					class="inline-flex items-center gap-1"
+					aria-label="Back to parent group"
+					onclick={() => navigate(groupPath.slice(0, -1))}><ArrowLeft class="size-4" /> Back</button
+				>{/if}
 			{#if groupUsage(scopeAt(groupDocument, groupPath).id) > 1}<span>Editing {groupUsage(scopeAt(groupDocument, groupPath).id)} linked uses</span>{/if}
 			<button onclick={collapseSelection}>Group selected</button>
 			<button onclick={openChooser}>Add reusable group…</button>

@@ -51,8 +51,7 @@
 		interactive = true;
 	}
 	async function closeDemo() {
-		const snapshot = pipelineStore.editorActions?.getSnapshot();
-		if (snapshot) await pipelineStore.save(snapshot);
+		await pipelineStore.editorActions?.save();
 		interactive = false;
 	}
 	const values = new Map<string, unknown>([['pipeline:preview', demo]]);
