@@ -1,8 +1,9 @@
 import { methods } from './methods';
 import type { NodeKind, Pipeline } from './types';
+import type { GroupDocument } from './groups';
 
 export type ClipboardNode = {
-	kind: NodeKind;
+	kind: NodeKind | 'group';
 	data: Record<string, unknown>;
 	/** Offset from the copied group's top-left corner. */
 	dx: number;
@@ -22,14 +23,19 @@ export type ClipboardEdge = {
 export type ClipboardEntry = {
 	/** Top-left of the copied group in flow coordinates; paste offsets from here. */
 	origin: { x: number; y: number };
+	groupDocument?: GroupDocument;
+	groupPaths?: Record<number, string[]>;
 	nodes: ClipboardNode[];
 	edges: ClipboardEdge[];
 };
 
 export type EditorActions = {
+	pipelineId: string;
 	addNode: (kind: NodeKind, position?: { x: number; y: number }) => void;
 	addNodeWithData: (kind: NodeKind, data: Record<string, unknown>, position?: { x: number; y: number }) => void;
 	getSnapshot: () => Pipeline | null;
+	save: () => Promise<void>;
+	patchRuntimeNode: (id: string, patch: Record<string, unknown>) => void;
 	revertToSnapshot: (p: Pipeline) => void;
 	undo: () => void;
 	redo: () => void;
@@ -52,12 +58,17 @@ class PipelineStore {
 		this.pipelines = await methods.list();
 	}
 
-	async save(p: Pipeline): Promise<void> {
+	async save(p: Pipeline): Promise<Pipeline> {
+		p = $state.snapshot(p);
 		const save = this.pendingSave.then(() => methods.save(p));
-		this.pendingSave = save.catch(() => {});
-		await save;
+		this.pendingSave = save.then(
+			() => {},
+			() => {}
+		);
+		const saved = await save;
 		this.lastSavedAt = Date.now();
 		await this.refresh();
+		return saved;
 	}
 
 	async remove(id: string): Promise<void> {

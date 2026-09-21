@@ -7,7 +7,8 @@ import type { AudioApplication, AudioDevice, StartPipelinePayload } from './type
 import { methods as pipelineMethods } from '$lib/modules/pipeline/methods';
 import { pipelineStore } from '$lib/modules/pipeline/stores.svelte';
 import { isFromFuture } from '$lib/modules/pipeline/migrations';
-import type { FileRecordingNodeData, PipelineNode, RecordingFormat } from '$lib/modules/pipeline/types';
+import { patchRuntimeNode } from '$lib/modules/pipeline/groups';
+import type { Pipeline, FileRecordingNodeData, PipelineNode, RecordingFormat } from '$lib/modules/pipeline/types';
 import { appSettings } from '$lib/modules/settings/stores.svelte';
 import { errorStore } from '$lib/modules/error';
 
@@ -41,6 +42,91 @@ class AudioStore {
 	missingFilePaths = $state<Set<string>>(new Set());
 	safeMode = $state(false);
 	shuttingDown = false;
+	hotkeyErrors = $state<Record<string, string>>({});
+	private liveControls = new Map<string, string>();
+	private controlsQueue: Promise<void> = Promise.resolve();
+	private patchQueue: Promise<void> = Promise.resolve();
+
+	private async prepareNetwork(graph: StartPipelinePayload): Promise<void> {
+		for (const n of graph.nodes) if (n.kind === 'netReceiver') await methods.netReceiverListen(n.id, Number(n.data.port));
+	}
+
+	async syncLiveControls(graph: StartPipelinePayload): Promise<void> {
+		const snapshot = $state.snapshot(graph);
+		const apply = this.controlsQueue.then(() => this.applyLiveControls(snapshot));
+		this.controlsQueue = apply.catch(() => {});
+		return apply;
+	}
+
+	private async applyLiveControls(graph: StartPipelinePayload): Promise<void> {
+		const ids = new Set(graph.nodes.map((n) => n.id));
+		for (const id of this.liveControls.keys()) if (!ids.has(id)) this.liveControls.delete(id);
+		for (const n of graph.nodes) {
+			const signature = JSON.stringify(n.data);
+			if (this.liveControls.get(n.id) === signature) continue;
+			const previous = this.liveControls.get(n.id);
+			await methods.updateEffect(n.id, n.data);
+			if (['appAudio', 'systemAudio', 'audioFile', 'microphone'].includes(n.kind) && typeof n.data.volume === 'number')
+				await methods.setInputVolume(n.id, n.data.volume);
+			if (n.kind === 'audioFile') {
+				await methods.setAudioFileLoop(n.id, Boolean(n.data.loopEnabled));
+				if (previous && JSON.parse(previous).autoStart !== n.data.autoStart) await methods.setAudioFilePaused(n.id, !n.data.autoStart);
+			}
+			if (n.kind === 'webRtcCollaborator')
+				await methods.webrtcSetIdentity(
+					n.id,
+					String(n.data.name ?? ''),
+					Number(n.data.channels ?? 1),
+					String(n.data.codec ?? 'opus'),
+					Number(n.data.opusBitrate),
+					String(n.data.opusApplication ?? 'audio')
+				);
+			this.liveControls.set(n.id, signature);
+		}
+	}
+
+	async patchNode(pipelineId: string, id: string, patch: Record<string, unknown>, reconcile = true): Promise<void> {
+		const task = this.patchQueue.then(async () => {
+			const editor = pipelineStore.editorActions;
+			if (editor?.getSnapshot()?.id === pipelineId) editor.patchRuntimeNode(id, patch);
+			else {
+				const p = await pipelineMethods.get(pipelineId);
+				if (!p) throw new Error('Pipeline no longer exists');
+				const next = patchRuntimeNode(p, id, patch);
+				await pipelineStore.save(next);
+				if (reconcile && this.isRunning && this.runningPipelineId === pipelineId) await this.restartPipeline(next);
+			}
+		});
+		this.patchQueue = task.catch(() => {});
+		return task;
+	}
+
+	async capturePluginState(id: string): Promise<void> {
+		const pipelineId = this.runningPipelineId;
+		if (!pipelineId) return;
+		const editor = pipelineStore.editorActions?.getSnapshot();
+		const p = editor?.id === pipelineId ? editor : await pipelineMethods.get(pipelineId);
+		const node = p?.nodes.find((n) => n.id === id);
+		if (node?.kind !== 'plugin') return;
+		const state = await methods.getPluginState(id);
+		const current = pipelineStore.editorActions?.getSnapshot();
+		const fresh = current?.id === pipelineId ? current : await pipelineMethods.get(pipelineId);
+		const now = fresh?.nodes.find((n) => n.id === id);
+		if (state !== null && now && now.data.path === node.data.path && now?.data.pluginId === node.data.pluginId && now.data.state !== state)
+			await this.patchNode(pipelineId, id, { state });
+	}
+
+	async retryRecordingFile(nodeId: string): Promise<void> {
+		if (this.shuttingDown) return;
+		const pipelineId = this.pendingRetryPipelineId ?? this.runningPipelineId;
+		this.pendingRetryPipelineId = null;
+		if (!pipelineId || !this.fullGraph) return;
+		const graph = await this.promptRecordingFile(pipelineId, this.fullGraph, nodeId);
+		if (graph) {
+			if (this.isRunning && this.runningPipelineId === pipelineId) await this.restartPipeline(graph);
+			else await this.activatePipeline(pipelineId, graph);
+		}
+	}
 
 	private lastGraph: StartPipelinePayload | null = null;
 	private fullGraph: StartPipelinePayload | null = null;
@@ -78,6 +164,7 @@ class AudioStore {
 		if (this.isRunning) this.startedAt = Date.now();
 		this.unlisten = await methods.onState((e) => {
 			if (e.kind === 'started') {
+				this.liveControls.clear();
 				this.isRunning = true;
 				this.startedAt = Date.now();
 			} else if (e.kind === 'stopped') {
@@ -120,6 +207,7 @@ class AudioStore {
 						const reduced = this.buildReducedGraph(this.fullGraph, this.pendingNodeIds);
 						if (reduced.nodes.length > 0) {
 							try {
+								await this.prepareNetwork(reduced);
 								await methods.reconcilePipeline(reduced);
 								this.lastGraph = reduced;
 								this.startPendingReconnectLoop();
@@ -166,6 +254,7 @@ class AudioStore {
 						const reduced = this.buildReducedGraph(this.fullGraph, this.pendingNodeIds);
 						if (reduced.nodes.length > 0) {
 							try {
+								await this.prepareNetwork(reduced);
 								await methods.reconcilePipeline(reduced);
 								this.lastGraph = reduced;
 								this.startPendingReconnectLoop();
@@ -202,7 +291,10 @@ class AudioStore {
 		const toStart = excluded.size > 0 ? this.buildReducedGraph(graph, excluded) : graph;
 		if (this.shuttingDown) return;
 		try {
+			await this.prepareNetwork(toStart);
 			await methods.startPipeline(toStart);
+			this.liveControls.clear();
+			await this.syncLiveControls(toStart);
 			this.lastGraph = toStart;
 			if (excluded.size > 0) {
 				this.startPendingReconnectLoop();
@@ -221,20 +313,11 @@ class AudioStore {
 		await pipelineMethods.setActivePipelineId(pipelineId).catch(() => {});
 	}
 
-	/** Routes a `choose-file` error. With the editor open its File Recording
-	 * node owns the dialog (and writes the path back into the editor state);
-	 * elsewhere the store opens the dialog and persists the choice itself. */
 	private async handleStartError(e: unknown, pipelineId: string, graph: StartPipelinePayload): Promise<boolean> {
 		const nodeId = this.chooseFileNodeIdFrom(e);
 		if (!nodeId) return false;
-		if (pipelineStore.editorActions?.getSnapshot()?.id === pipelineId) {
-			this.chooseFileNodeId = nodeId;
-			this.pendingRetryPipelineId = pipelineId;
-			return true;
-		}
 		const next = await this.promptRecordingFile(pipelineId, graph, nodeId);
-		if (!next) return true;
-		await this.activatePipeline(pipelineId, next);
+		if (next) await this.activatePipeline(pipelineId, next);
 		return true;
 	}
 
@@ -269,16 +352,11 @@ class AudioStore {
 		// A fresh path can be written unconditionally; only append keeps the
 		// "extend this file" intent, everything else lands as a plain overwrite.
 		const mode = append ? 'append' : 'overwrite';
-		const patchNode = (n: PipelineNode): PipelineNode => (n.id === nodeId ? { ...n, data: { ...n.data, filePath: path, mode } } : n);
-		void pipelineMethods
-			.get(pipelineId)
-			.then((p) => {
-				if (!p) return;
-				const nodes = p.nodes.map(patchNode);
-				return pipelineMethods.save({ ...p, nodes, updatedAt: Date.now() });
-			})
-			.catch(() => {});
-		return { nodes: graph.nodes.map(patchNode), edges: graph.edges };
+		await this.patchNode(pipelineId, nodeId, { filePath: path, mode }, false);
+		const editor = pipelineStore.editorActions?.getSnapshot();
+		const p = editor?.id === pipelineId ? editor : await pipelineMethods.get(pipelineId);
+		if (!p) throw new Error('Pipeline no longer exists');
+		return { nodes: p.nodes, edges: p.edges };
 	}
 
 	/** Explicit user stop: unlike an engine-reported `stopped`/`error` event
@@ -331,7 +409,10 @@ class AudioStore {
 		const reduced = this.buildReducedGraph(full, excluded);
 		if (browser) window.localStorage.setItem('splitwave:boot_audio_crash_guard', 'true');
 		try {
+			await this.prepareNetwork(reduced);
 			await methods.startPipeline(reduced);
+			this.liveControls.clear();
+			await this.syncLiveControls(reduced);
 		} catch (e) {
 			if (browser) window.localStorage.removeItem('splitwave:boot_audio_crash_guard');
 			this.reportError(e);
@@ -423,12 +504,14 @@ class AudioStore {
 		this.pendingNodeIds = stillUnresolved;
 		const reduced = this.buildReducedGraph(this.fullGraph, stillUnresolved);
 		try {
+			await this.prepareNetwork(reduced);
 			await methods.reconcilePipeline(reduced);
 			this.lastGraph = reduced;
 		} catch (e: unknown) {
 			const msg = e instanceof Error ? e.message : String(e);
 			if (msg.includes('not running')) {
 				try {
+					await this.prepareNetwork(reduced);
 					await methods.startPipeline(reduced);
 					this.lastGraph = reduced;
 				} catch {
@@ -460,7 +543,9 @@ class AudioStore {
 		this.lastGraph = toRun;
 		let reconcileErr: unknown;
 		try {
+			await this.prepareNetwork(toRun);
 			await methods.reconcilePipeline(toRun);
+			await this.syncLiveControls(toRun);
 			return;
 		} catch (e) {
 			reconcileErr = e;
@@ -468,7 +553,10 @@ class AudioStore {
 		const msg = reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr);
 		if (msg.includes('not running')) {
 			try {
+				await this.prepareNetwork(toRun);
 				await methods.startPipeline(toRun);
+				this.liveControls.clear();
+				await this.syncLiveControls(toRun);
 			} catch (e) {
 				if (this.routeStartError(e)) return;
 				this.stopPendingReconnectLoop();

@@ -127,14 +127,7 @@
 	// Pull the plugin's own state (edited via its GUI) into node data so it
 	// survives project reload. State is non-structural, so this never rebuilds.
 	async function captureState() {
-		const capturedFor = data.path;
-		const state = await audioMethods.getPluginState(id).catch(() => null);
-		// The plugin may have been swapped while this was in flight. Writing now
-		// would hand the previous plugin's blob to the new one, which then loads
-		// it on the next rebuild and ends up in a state its own editor disagrees
-		// with.
-		if (data.path !== capturedFor) return;
-		if (state && state !== data.state) flow.updateNodeData(id, { state });
+		await audioStore.capturePluginState(id);
 	}
 
 	// Last editor failure, shown in the node. The backend message names the
@@ -162,7 +155,6 @@
 			.onPluginEditorClosed((closedId) => {
 				if (closedId === id) {
 					editorOpen = false;
-					captureState();
 				}
 			})
 			.then((fn) => (unlisten = fn));

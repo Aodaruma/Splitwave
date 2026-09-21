@@ -11,6 +11,8 @@ export interface AudioPorts {
 	id: string;
 	handles: { id: string | null; y: number }[];
 	channels?: ChannelPortConfig;
+	/** Group interfaces keep their user-defined order and stable handle IDs. */
+	ordered?: { id: string; handle: string | null }[];
 }
 
 export function createsCycle(source: string, target: string, edges: Pick<Edge, 'source' | 'target'>[]): boolean {
@@ -36,6 +38,7 @@ function channelNumber(id: string | null): number | null {
 }
 
 function sourceHandles(source: AudioPorts, edges: Edge[]): (string | null)[] {
+	if (source.ordered) return source.ordered.map((p) => p.id);
 	const config = source.channels;
 	if (config) {
 		const incoming = edges.filter((e) => e.target === source.id).map((e) => e.targetHandle ?? '');
@@ -60,10 +63,15 @@ export function planAutoConnect(source: AudioPorts, target: AudioPorts, edges: E
 	if (createsCycle(source.id, target.id, edges)) return [];
 	const inputs = [...target.handles].sort((a, b) => a.y - b.y);
 	const planned: Connection[] = [];
-	for (const sourceHandle of sourceHandles(source, edges)) {
-		const ch = channelNumber(sourceHandle);
+	const sources = sourceHandles(source, edges);
+	for (const [index, sourceHandle] of sources.entries()) {
+		const semantic = source.ordered?.find((p) => p.id === sourceHandle)?.handle ?? sourceHandle;
+		const ch = channelNumber(semantic);
 		let targetHandle: string | null | undefined;
-		if (ch !== null) {
+		if (target.ordered) {
+			const candidate = source.ordered ? target.ordered[index] : target.ordered.find((p) => channelNumber(p.handle) === ch);
+			if (candidate && (channelNumber(candidate.handle) !== null) === (ch !== null)) targetHandle = candidate.id;
+		} else if (ch !== null) {
 			if (target.channels) {
 				if (ch <= target.channels.max) targetHandle = `ch${ch}`;
 			} else {
