@@ -174,7 +174,7 @@ export const registry: Record<NodeKind, NodeRegistryEntry> = {
 		kind: 'eq',
 		category: 'effect',
 		label: 'EQ',
-		description: '10-band graphic EQ at ISO octave centres (32 Hz → 16 kHz).',
+		description: '8-band parametric EQ with an interactive response graph; preserves legacy graphic EQ.',
 		component: Eq,
 		icon: SlidersIcon,
 		defaultData: DEFAULT_NODE_DATA['eq']

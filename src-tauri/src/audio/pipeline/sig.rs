@@ -118,6 +118,8 @@ fn structural_effect(spec: &EffectSpec) -> EffectSpec {
         }
         E::Eq(d) => {
             d.gains_db = [0.0; 10];
+            // The algorithm is structural; every band parameter is live.
+            d.bands = crate::audio::graph::default_eq_bands();
             d.bypassed = false;
         }
         E::Limiter(d) => {
@@ -194,5 +196,29 @@ fn edge_kind_ord(k: EdgeKind) -> u8 {
     match k {
         EdgeKind::Main => 0,
         EdgeKind::Sidechain => 1,
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio::graph::{default_eq_bands, EqData, EqMode};
+    #[test]
+    fn eq_mode_is_structural_but_bands_and_bypass_are_live() {
+        let mut d = EqData {
+            mode: EqMode::Parametric,
+            bands: default_eq_bands(),
+            gains_db: [0.0; 10],
+            bypassed: false,
+        };
+        let original = structural_effect(&EffectSpec::Eq(d));
+        d.bands[0].frequency = 1234.0;
+        d.bands[1].q = 3.0;
+        d.bands[2].enabled = false;
+        d.bands[3].filter = crate::audio::graph::EqFilter::LowCut;
+        d.gains_db[0] = 12.0;
+        d.bypassed = true;
+        assert_eq!(original, structural_effect(&EffectSpec::Eq(d)));
+        d.mode = EqMode::Graphic;
+        assert_ne!(original, structural_effect(&EffectSpec::Eq(d)));
     }
 }

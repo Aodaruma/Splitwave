@@ -333,7 +333,7 @@ pub async fn update_effect(
     node_id: String,
     data: serde_json::Value,
     state: State<'_, AppState>,
-) -> AppResult<()> {
+) -> AppResult<Option<u32>> {
     let tx = state.audio_tx.clone();
     audio_request(tx, move |reply| Command::UpdateEffect {
         node_id,

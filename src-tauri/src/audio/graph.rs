@@ -375,10 +375,86 @@ pub struct DeEsserData {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct EqData {
-    /// One gain per ISO octave band (see `EQ_FREQUENCIES_HZ` in effects.rs).
+    /// Legacy crossover-band gains; never interpreted as parametric peaks.
+    #[serde(default)]
     pub gains_db: [f32; 10],
     #[serde(default)]
+    pub mode: EqMode,
+    #[serde(default = "default_eq_bands")]
+    pub bands: [EqBand; 8],
+    #[serde(default)]
     pub bypassed: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum EqMode {
+    #[default]
+    Graphic,
+    Parametric,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum EqFilter {
+    Bell,
+    LowShelf,
+    HighShelf,
+    LowCut,
+    HighCut,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct EqBand {
+    pub filter: EqFilter,
+    pub frequency: f32,
+    pub gain_db: f32,
+    pub q: f32,
+    pub enabled: bool,
+}
+
+pub fn default_eq_bands() -> [EqBand; 8] {
+    [40.0, 100.0, 250.0, 630.0, 1600.0, 4000.0, 10000.0, 16000.0].map(|frequency| EqBand {
+        filter: EqFilter::Bell,
+        frequency,
+        gain_db: 0.0,
+        q: 1.0,
+        enabled: true,
+    })
+}
+
+impl EqData {
+    pub fn validate(&self, sample_rate: u32) -> Result<(), String> {
+        if self
+            .gains_db
+            .iter()
+            .any(|g| !g.is_finite() || !(-18.0..=18.0).contains(g))
+        {
+            return Err("EQ graphic gains must be finite and within -18..18 dB".into());
+        }
+        for b in self.bands {
+            if !b.frequency.is_finite()
+                || !(20.0..=20000.0).contains(&b.frequency)
+                || !b.gain_db.is_finite()
+                || !(-18.0..=18.0).contains(&b.gain_db)
+                || !b.q.is_finite()
+                || !(0.1..=12.0).contains(&b.q)
+            {
+                return Err(
+                    "EQ bands require finite frequency 20..20000 Hz, gain -18..18 dB and Q 0.1..12"
+                        .into(),
+                );
+            }
+        }
+        if self.mode == EqMode::Graphic && sample_rate <= 22628 {
+            return Err("Legacy graphic EQ requires a sample rate above 22628 Hz (highest crossover must be below Nyquist); select Parametric for lower rates".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, TS)]
@@ -909,6 +985,11 @@ impl GraphSpec {
             None => 48_000,
         };
 
+        for effect in &effects {
+            if let EffectSpec::Eq(data) = &effect.spec {
+                data.validate(sample_rate).map_err(AppError::Validation)?;
+            }
+        }
         Ok(ValidGraph {
             inputs,
             outputs,

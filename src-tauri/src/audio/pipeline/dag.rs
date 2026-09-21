@@ -1340,6 +1340,9 @@ pub(super) fn build_output_graph(
             // Built once the node's width is known: a plugin is offered that
             // width and may take it whole, the way a DAW instantiates one
             // multichannel plugin instead of several stereo ones.
+            if let EffectSpec::Eq(data) = &effect.spec {
+                data.validate(output_sr).map_err(AppError::Validation)?;
+            }
             let build = instantiate_effect(
                 &effect.spec,
                 id,

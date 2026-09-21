@@ -1,14 +1,37 @@
 /// RBJ cookbook biquad in Transposed Direct Form II — one state pair (z1, z2)
 /// per channel, half the rounding noise of DF I.
 #[derive(Clone, Copy, Default)]
-pub struct Biquad {
-    pub b0: f32,
-    pub b1: f32,
-    pub b2: f32,
-    pub a1: f32,
-    pub a2: f32,
-    z1: f32,
-    z2: f32,
+pub struct Biquad<T = f32> {
+    pub b0: T,
+    pub b1: T,
+    pub b2: T,
+    pub a1: T,
+    pub a2: T,
+    z1: T,
+    z2: T,
+}
+
+// Low-frequency, high-Q sections at 384 kHz need double precision poles.
+impl Biquad<f64> {
+    pub(super) fn normalized(b: [f64; 3], a: [f64; 3]) -> Self {
+        Self {
+            b0: b[0] / a[0],
+            b1: b[1] / a[0],
+            b2: b[2] / a[0],
+            a1: a[1] / a[0],
+            a2: a[2] / a[0],
+            z1: 0.0,
+            z2: 0.0,
+        }
+    }
+
+    #[inline]
+    pub(super) fn process_f64(&mut self, x: f64) -> f64 {
+        let y = self.b0 * x + self.z1;
+        self.z1 = self.b1 * x - self.a1 * y + self.z2;
+        self.z2 = self.b2 * x - self.a2 * y;
+        y
+    }
 }
 
 impl Biquad {

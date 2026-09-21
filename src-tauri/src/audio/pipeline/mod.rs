@@ -203,8 +203,19 @@ impl ActivePipeline {
         }
     }
 
-    pub fn update_effect(&self, node_id: &str, data: &serde_json::Value) {
+    pub fn update_effect(&self, node_id: &str, data: &serde_json::Value) -> AppResult<Option<u32>> {
+        let mut sample_rate = None;
         if let Some(control) = self.effect_controls.get(node_id) {
+            if let EffectControl::Eq { controls } = control {
+                let mut d: crate::audio::graph::EqData = serde_json::from_value(data.clone())
+                    .map_err(|e| AppError::Validation(format!("Invalid EQ update: {e}")))?;
+                if data.get("mode").is_none() {
+                    d.mode = controls.mode;
+                }
+                d.validate(controls.sample_rate)
+                    .map_err(AppError::Validation)?;
+                sample_rate = Some(controls.sample_rate);
+            }
             control.apply_update(data);
         }
         // Some formats' editors only redraw when the host says a parameter
@@ -229,6 +240,7 @@ impl ActivePipeline {
                 bypass.store(b, Ordering::Relaxed);
             }
         }
+        Ok(sample_rate)
     }
 
     /// Queue a seek on the audio-file input identified by `node_id`. Silent

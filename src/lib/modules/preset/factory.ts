@@ -1,5 +1,11 @@
+import { defaultEq } from '$lib/modules/pipeline/eq';
 import type { Preset, PresetKind } from './types';
 import { PRESET_VERSION } from './version';
+
+function graphicEqDefaults() {
+	const { bypassed: _, ...params } = defaultEq('graphic');
+	return params;
+}
 
 function make<K extends PresetKind>(kind: K, name: string, data: Preset<K>['data']): Preset<K> {
 	return {
@@ -119,12 +125,12 @@ export const FACTORY_PRESETS: Preset[] = [
 
 	// Fixed ISO octave bands, so a "high-pass at 80 Hz" can only be approximated
 	// by pulling the 32 and 64 Hz bands down hard.
-	make('eq', 'Spoken Voice Cleanup', { gainsDb: [-18, -9, 0, -2, -1, 0, 3, 2, 1, 0] }),
-	make('eq', 'Podcast Warmth (Male)', { gainsDb: [-18, -6, 2, 0, -1, 0, 2, 3, 1, -2] }),
-	make('eq', 'Clarity / De-Mud', { gainsDb: [-12, -6, -2, -3, -2, 0, 2, 3, 2, 0] }),
-	make('eq', 'Air / Bright Vocal', { gainsDb: [-12, -6, 0, -1, 0, 0, 1, 2, 3, 3] }),
-	make('eq', 'Telephone / Lo-Fi FX', { gainsDb: [-18, -18, -12, 0, 3, 3, 2, 0, -18, -18] }),
-	make('eq', 'Playback Smile Curve', { gainsDb: [4, 3, 1, 0, -1, -1, 0, 1, 3, 4] }),
+	make('eq', 'Spoken Voice Cleanup', { ...graphicEqDefaults(), gainsDb: [-18, -9, 0, -2, -1, 0, 3, 2, 1, 0] }),
+	make('eq', 'Podcast Warmth (Male)', { ...graphicEqDefaults(), gainsDb: [-18, -6, 2, 0, -1, 0, 2, 3, 1, -2] }),
+	make('eq', 'Clarity / De-Mud', { ...graphicEqDefaults(), gainsDb: [-12, -6, -2, -3, -2, 0, 2, 3, 2, 0] }),
+	make('eq', 'Air / Bright Vocal', { ...graphicEqDefaults(), gainsDb: [-12, -6, 0, -1, 0, 0, 1, 2, 3, 3] }),
+	make('eq', 'Telephone / Lo-Fi FX', { ...graphicEqDefaults(), gainsDb: [-18, -18, -12, 0, 3, 3, 2, 0, -18, -18] }),
+	make('eq', 'Playback Smile Curve', { ...graphicEqDefaults(), gainsDb: [4, 3, 1, 0, -1, -1, 0, 1, 3, 4] }),
 
 	make('saturator', 'Subtle Warmth', { thresholdDb: -6, driveDb: 3 }),
 	make('saturator', 'Vocal Presence', { thresholdDb: -6, driveDb: 6 }),
