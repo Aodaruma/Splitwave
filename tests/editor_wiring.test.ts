@@ -1,8 +1,19 @@
 import { describe, expect, it } from 'bun:test';
 import type { Edge } from '@xyflow/svelte';
 import type { AudioPorts } from '../src/lib/modules/flow/utils/auto_connect';
-import { assertRewireAcyclic, crossesWire, detachNodes, screenPath, shakeDetector, switchInputs, type Point } from '../src/lib/modules/flow/utils/wiring';
+import {
+	assertRewireAcyclic,
+	assertRewireKeepsFeeds,
+	crossesWire,
+	detachNodes,
+	screenPath,
+	shakeDetector,
+	switchInputs,
+	type Point
+} from '../src/lib/modules/flow/utils/wiring';
 import { canvasShortcut } from '../src/lib/modules/flow/utils/shortcuts';
+import { definition, documentFor, expand, groupSelection, type GroupNode } from '../src/lib/modules/pipeline/groups';
+import type { Pipeline, PipelineNode } from '../src/lib/modules/pipeline/types';
 
 const edge = (id: string, targetHandle: string | null = 'ch1', source = id, target = 'node'): Edge => ({
 	id,
@@ -103,6 +114,58 @@ describe('rendered wire cutting geometry', () => {
 });
 
 describe('input switching', () => {
+	it('rejects lost pass-through feeds behind group ports, including nested groups', () => {
+		for (const depth of [1, 2]) {
+			const p: Pipeline = {
+				id: 'group-feed',
+				name: 'Group feed',
+				createdAt: 1,
+				updatedAt: 1,
+				nodes: ['microphone', 'gain', 'speaker'].map((kind) => ({
+					id: kind,
+					kind: kind as PipelineNode['kind'],
+					data: {} as PipelineNode['data'],
+					position: { x: 0, y: 0 }
+				})),
+				edges: [
+					{ id: 'in', source: 'microphone', sourceHandle: 'ch1', target: 'gain', targetHandle: 'ch1' },
+					{ id: 'out', source: 'gain', sourceHandle: 'ch1', target: 'speaker', targetHandle: 'ch1' }
+				]
+			};
+			const doc = documentFor(p);
+			let child = 'gain',
+				second = 'ch2';
+			for (let i = 0; i < depth; i++) {
+				const id = groupSelection(doc, [], [child]);
+				const instance = definition(doc, doc.root).nodes.find((n) => n.id === id) as GroupNode;
+				definition(doc, instance.data.definition).inputs.push({ id: 'second', label: 'R', node: child, handle: second });
+				child = id;
+				second = 'second';
+			}
+			const before = expand(doc);
+			const changed = structuredClone(doc);
+			definition(changed, changed.root).edges.find((e) => e.id === 'in')!.targetHandle = second;
+			const after = expand(changed);
+			expect(() => assertRewireKeepsFeeds(before, after)).toThrow('feed for a connected output');
+			expect(expand(doc)).toEqual(before);
+		}
+	});
+
+	it('allows fed stereo swaps, already unfed outputs and independent plugin outputs', () => {
+		const before = {
+			nodes: [{ id: 'node', kind: 'gain', data: {}, position: { x: 0, y: 0 } } as PipelineNode],
+			edges: [edge('in'), edge('out', 'ch1', 'node', 'speaker')] as Pipeline['edges']
+		};
+		const after = { ...before, edges: [{ ...before.edges[0], targetHandle: 'ch2' }, before.edges[1]] };
+		expect(() => assertRewireKeepsFeeds(before, after)).toThrow('feed');
+		const right = { ...edge('right', 'ch2'), sourceHandle: 'ch2' } as Pipeline['edges'][number];
+		expect(() =>
+			assertRewireKeepsFeeds({ ...before, edges: [...before.edges, right] }, { ...after, edges: [...after.edges, { ...right, targetHandle: 'ch1' }] })
+		).not.toThrow();
+		expect(() => assertRewireKeepsFeeds({ ...before, edges: [before.edges[1]] }, after)).not.toThrow();
+		expect(() => assertRewireKeepsFeeds(before, { ...after, nodes: [{ ...before.nodes[0], kind: 'plugin' }] })).not.toThrow();
+	});
+
 	it('rejects feedback introduced by expanded group input assignments without mutating either graph', () => {
 		const before = [edge('inside', 'ch1', 'inner-a', 'inner-b'), edge('return', 'ch1', 'inner-b', 'inner-c')];
 		const after = [before[0], { ...before[1], target: 'inner-a' }];

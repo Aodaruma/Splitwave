@@ -1,4 +1,5 @@
 import type { Edge, Node } from '@xyflow/svelte';
+import type { Pipeline } from '../../pipeline/types';
 import { createsCycle, type AudioPorts } from './auto_connect';
 import { parseHandle } from './channels';
 
@@ -70,6 +71,22 @@ export function assertRewireAcyclic(before: Pick<Edge, 'id' | 'source' | 'target
 			)
 		)
 			throw new Error('Input switching would create an audio routing cycle.');
+	}
+}
+
+/** Check flattened routes so nested and shared group interfaces cannot hide a lost feed. */
+export function assertRewireKeepsFeeds(before: Pick<Pipeline, 'nodes' | 'edges'>, after: Pick<Pipeline, 'nodes' | 'edges'>) {
+	const key = (node: string, handle?: string) => `${node}\0${handle ?? ''}`;
+	const priorFeeds = new Set(before.edges.map((e) => key(e.target, e.targetHandle)));
+	const nextFeeds = new Set(after.edges.map((e) => key(e.target, e.targetHandle)));
+	const usedOutputs = new Set(before.edges.map((e) => key(e.source, e.sourceHandle)));
+	// Plugin output buses are independent of their input channel assignments.
+	const plugins = new Set(after.nodes.filter((n) => n.kind === 'plugin').map((n) => n.id));
+	for (const edge of after.edges) {
+		if (!edge.sourceHandle || (parseHandle(edge.sourceHandle) ?? 0) < 1 || plugins.has(edge.source)) continue;
+		const output = key(edge.source, edge.sourceHandle);
+		if (usedOutputs.has(output) && priorFeeds.has(output) && !nextFeeds.has(output))
+			throw new Error('Input switching would remove the feed for a connected output.');
 	}
 }
 

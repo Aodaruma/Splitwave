@@ -17,7 +17,17 @@
 	import { createHistoryRestorer } from '../utils/history_restore';
 	import { planAutoConnect, type AudioPorts } from '../utils/auto_connect';
 	import { canvasShortcut } from '../utils/shortcuts';
-	import { assertRewireAcyclic, crossesWire, detachNodes, editableWire, screenPath, shakeDetector, switchInputs, type Point } from '../utils/wiring';
+	import {
+		assertRewireAcyclic,
+		assertRewireKeepsFeeds,
+		crossesWire,
+		detachNodes,
+		editableWire,
+		screenPath,
+		shakeDetector,
+		switchInputs,
+		type Point
+	} from '../utils/wiring';
 	import type { NodeKind, Pipeline } from '$lib/modules/pipeline/types';
 	import { pipelineStore } from '$lib/modules/pipeline/stores.svelte';
 	import { appSettings } from '$lib/modules/settings/stores.svelte';
@@ -452,7 +462,7 @@
 		});
 	}
 
-	function editWires(next: XyEdge[]) {
+	function editWires(next: XyEdge[], keepFeeds = false) {
 		if (next === edges || (next.length === edges.length && next.every((e, i) => e === edges[i]))) return;
 		const previous = edges,
 			doc = structuredClone(groupDocument);
@@ -462,12 +472,14 @@
 				edges = next;
 				const after = getSnapshot();
 				assertRewireAcyclic(before.edges, after.edges);
+				if (keepFeeds) assertRewireKeepsFeeds(before, after);
 				const definitions = { ...groupLibrary.definitions, ...after.groups!.definitions };
 				for (const p of Object.values(groupLibrary.pipelines))
 					if (p.id !== pipeline.id && p.groups) {
 						const prior = expand(structuredClone(p.groups));
 						const updated = expand({ ...structuredClone(p.groups), definitions });
 						assertRewireAcyclic(prior.edges, updated.edges);
+						if (keepFeeds) assertRewireKeepsFeeds(prior, updated);
 					}
 			});
 		} catch (error) {
@@ -485,7 +497,7 @@
 		const id = selected[0].id;
 		const next = switchInputs(audioPorts(id, 'target'), edges, audioPorts(id, 'source'));
 		connectNotice = next === edges ? 'No compatible input switch (unavailable inputs, group boundary, or an output would lose its feed).' : '';
-		editWires(next);
+		editWires(next, true);
 	}
 
 	function cancelCut() {
