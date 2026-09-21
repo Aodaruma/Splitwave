@@ -1,3 +1,5 @@
+import type { ChannelPortConfig } from './utils/auto_connect';
+
 /** Channels armed for one drag. Scoped to a single node, since a drag has one origin. */
 class ChannelSelection {
 	nodeId = $state<string | null>(null);
@@ -27,3 +29,6 @@ export const channelSelection = new ChannelSelection();
 
 /** Target-side channel ceiling per node. Slots alone do not stop a multi-channel drag. */
 export const channelCaps = new Map<string, number>();
+
+/** Live socket capabilities, including channels that can grow before rendering. */
+export const channelPorts = new Map<string, Partial<Record<'source' | 'target', ChannelPortConfig>>>();

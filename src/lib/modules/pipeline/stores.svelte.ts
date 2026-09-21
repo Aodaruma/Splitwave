@@ -7,6 +7,8 @@ export type ClipboardNode = {
 	/** Offset from the copied group's top-left corner. */
 	dx: number;
 	dy: number;
+	width?: number;
+	height?: number;
 };
 
 /** Endpoints are indices into `ClipboardEntry.nodes`; ids are minted on paste. */

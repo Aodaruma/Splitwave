@@ -2,7 +2,12 @@
 	import { Background, Controls, SvelteFlow, useSvelteFlow, type Edge as XyEdge, type Node as XyNode } from '@xyflow/svelte';
 	import { createId } from '@paralleldrive/cuid2';
 	import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-	import { onDestroy, onMount, untrack } from 'svelte';
+	import { flushSync, onDestroy, onMount, untrack } from 'svelte';
+	import { platform } from '@tauri-apps/plugin-os';
+	import { modalManager } from '$lib/modules/overlay/modal';
+	import { copyGraph, offsetOrigin, pasteGraph } from '../utils/clipboard';
+	import { planAutoConnect, type AudioPorts } from '../utils/auto_connect';
+	import { canvasShortcut } from '../utils/shortcuts';
 	import type { NodeKind, Pipeline } from '$lib/modules/pipeline/types';
 	import { pipelineStore } from '$lib/modules/pipeline/stores.svelte';
 	import { appSettings } from '$lib/modules/settings/stores.svelte';
@@ -17,7 +22,7 @@
 	import OrphanEdges from './_orphan_edges.svelte';
 	const edgeTypes = { channel: ChannelEdge };
 	import { Backspace, Copy, ClipboardPaste, Delete, Folder, KeyCommand, Loop, Refresh, Rewind } from '$lib/components/icons';
-	import { channelCaps, channelSelection } from '../stores.svelte';
+	import { channelCaps, channelPorts, channelSelection } from '../stores.svelte';
 	import { edgeSettings } from '../edge_settings.svelte';
 	import { Menu, MenuItem as OverlayMenuItem } from '$lib/modules/overlay/ui';
 	import type { Component } from 'svelte';
@@ -25,6 +30,9 @@
 	let { pipeline }: { pipeline: Pipeline } = $props();
 
 	const flow = useSvelteFlow();
+	const isMac = platform() === 'macos';
+	let scrollPans = $derived(appSettings.canvasScroll === 'pan' || (appSettings.canvasScroll === 'auto' && isMac));
+	let editorElement: HTMLDivElement;
 
 	function sanitizeEdges(xyNodes: XyNode[], xyEdges: XyEdge[]): XyEdge[] {
 		const ids = new Set(xyNodes.map((n) => n.id));
@@ -132,7 +140,7 @@
 				type: kind,
 				position: position ?? fallback,
 				data,
-				...(size ? { style: `width: ${size.width}px; height: ${size.height}px;` } : {})
+				...(size ?? {})
 			}
 		];
 	}
@@ -146,37 +154,16 @@
 		edges = edges.filter((e) => e.id !== edgeId);
 	}
 
-	function copyNodes(group: XyNode[]) {
-		if (group.length === 0) return;
-		const originX = Math.min(...group.map((n) => n.position.x));
-		const originY = Math.min(...group.map((n) => n.position.y));
-		const index = new Map(group.map((n, i) => [n.id, i]));
-		pipelineStore.clipboard = {
-			origin: { x: originX, y: originY },
-			nodes: group.map((n) => ({
-				kind: n.type as NodeKind,
-				data: JSON.parse(JSON.stringify(n.data)),
-				dx: n.position.x - originX,
-				dy: n.position.y - originY
-			})),
-			edges: edges.flatMap((e) => {
-				const source = index.get(e.source);
-				const target = index.get(e.target);
-				if (source === undefined || target === undefined) return [];
-				return [
-					{
-						source,
-						target,
-						sourceHandle: e.sourceHandle ?? undefined,
-						targetHandle: e.targetHandle ?? undefined
-					}
-				];
-			})
-		};
+	function copyEntry(group: XyNode[]) {
+		return copyGraph(
+			group.map((n) => ({ ...n, data: $state.snapshot(n.data) })),
+			edges
+		);
 	}
 
-	function copyNode(node: XyNode) {
-		copyNodes([node]);
+	function copyNodes(group: XyNode[]) {
+		const entry = copyEntry(group);
+		if (entry) pipelineStore.clipboard = entry;
 	}
 
 	function copySelection() {
@@ -187,36 +174,109 @@
 		nodes = nodes.map((n) => (n.selected ? n : { ...n, selected: true }));
 	}
 
-	/** Diagonal nudge so a pasted group stays next to its source instead of on top. */
-	const PASTE_OFFSET = 50;
+	function insertCopy(entry: NonNullable<typeof pipelineStore.clipboard>, origin: { x: number; y: number }) {
+		const graph = pasteGraph(
+			$state.snapshot(entry),
+			origin,
+			entry.nodes.map(() => createId()),
+			entry.edges.map(() => createId()),
+			appSettings.snapToGrid ? appSettings.gridSize : undefined
+		);
+		editGraph(() => {
+			nodes = [...nodes.map((n) => (n.selected ? { ...n, selected: false } : n)), ...graph.nodes];
+			// Programmatic copies must not trigger the armed-handle fan-out.
+			graph.edges.forEach((e) => seenEdgeIds.add(e.id));
+			edges = [...edges.map((e) => (e.selected ? { ...e, selected: false } : e)), ...graph.edges];
+		});
+	}
+
+	function duplicateSelection() {
+		const entry = copyEntry(nodes.filter((n) => n.selected));
+		if (!entry) return;
+		insertCopy(entry, offsetOrigin(entry.origin, appSettings.snapToGrid ? appSettings.gridSize : undefined));
+	}
 
 	function pasteAt(position?: { x: number; y: number }) {
 		const c = pipelineStore.clipboard;
 		if (!c || c.nodes.length === 0) return;
-		const origin = position ?? { x: c.origin.x + PASTE_OFFSET, y: c.origin.y + PASTE_OFFSET };
-		const ids = c.nodes.map(() => createId());
-		nodes = [
-			...nodes.map((n) => (n.selected ? { ...n, selected: false } : n)),
-			...c.nodes.map((n, i) => ({
-				id: ids[i],
-				type: n.kind,
-				position: { x: origin.x + n.dx, y: origin.y + n.dy },
-				data: JSON.parse(JSON.stringify(n.data)),
-				selected: true
-			}))
-		];
-		edges = [
-			...edges,
-			...c.edges.map((e) => ({
-				id: createId(),
-				type: 'channel',
-				source: ids[e.source],
-				sourceHandle: e.sourceHandle,
-				target: ids[e.target],
-				targetHandle: e.targetHandle
-			}))
-		];
+		const origin = position ?? offsetOrigin(c.origin, appSettings.snapToGrid ? appSettings.gridSize : undefined);
+		insertCopy(c, origin);
 		pipelineStore.clipboard = { ...c, origin };
+	}
+
+	function toggleGrid() {
+		appSettings.snapToGrid = !appSettings.snapToGrid;
+		appSettings.persist();
+	}
+
+	const INTERACTIVE =
+		'input, textarea, select, button, a, [contenteditable]:not([contenteditable="false"]), [role="dialog"], [role="button"]:not(.svelte-flow__node):not(.svelte-flow__selection-wrapper), [role="slider"], [role="combobox"], .nodrag, .nopan:not(.svelte-flow__node), .svelte-flow__handle, .svelte-flow__resize-control';
+	let connectDrag = $state<{ source: string; pointerId: number; startX: number; startY: number; x: number; y: number } | null>(null);
+	let connectNotice = $state('');
+
+	function bodyNode(target: EventTarget | null): HTMLElement | null {
+		if (!(target instanceof Element) || target.closest(INTERACTIVE)) return null;
+		const node = target.closest<HTMLElement>('.svelte-flow__node');
+		return node && editorElement.contains(node) ? node : null;
+	}
+
+	function onEditorPointerDown(event: PointerEvent) {
+		const target = event.target;
+		if (event.button !== 0 || !(target instanceof Element) || target.closest(INTERACTIVE) || modalManager.isOpen) return;
+		editorElement.focus({ preventScroll: true });
+		const node = bodyNode(target);
+		if (!event.altKey || !node?.dataset.id || !event.isPrimary) return;
+		event.preventDefault();
+		event.stopPropagation();
+		closeContextMenu();
+		connectNotice = '';
+		const rect = editorElement.getBoundingClientRect();
+		connectDrag = {
+			source: node.dataset.id,
+			pointerId: event.pointerId,
+			startX: event.clientX - rect.left,
+			startY: event.clientY - rect.top,
+			x: event.clientX - rect.left,
+			y: event.clientY - rect.top
+		};
+		editorElement.setPointerCapture(event.pointerId);
+	}
+
+	function onConnectMove(event: PointerEvent) {
+		if (!connectDrag || connectDrag.pointerId !== event.pointerId) return;
+		const rect = editorElement.getBoundingClientRect();
+		connectDrag = { ...connectDrag, x: event.clientX - rect.left, y: event.clientY - rect.top };
+	}
+
+	function cancelConnect() {
+		if (!connectDrag) return;
+		const { pointerId } = connectDrag;
+		connectDrag = null;
+		if (editorElement.hasPointerCapture(pointerId)) editorElement.releasePointerCapture(pointerId);
+	}
+
+	function audioPorts(id: string, side: 'source' | 'target'): AudioPorts {
+		const handles = flow.getInternalNode(id)?.internals.handleBounds?.[side] ?? [];
+		return { id, handles: handles.map((h) => ({ id: h.id ?? null, y: h.y })), channels: channelPorts.get(id)?.[side] };
+	}
+
+	function onConnectEnd(event: PointerEvent) {
+		if (!connectDrag || connectDrag.pointerId !== event.pointerId) return;
+		const source = connectDrag.source;
+		const moved = Math.hypot(connectDrag.x - connectDrag.startX, connectDrag.y - connectDrag.startY) >= 3;
+		const target = bodyNode(document.elementFromPoint(event.clientX, event.clientY))?.dataset.id;
+		cancelConnect();
+		if (!moved || !target) return;
+		const planned = planAutoConnect(audioPorts(source, 'source'), audioPorts(target, 'target'), edges);
+		if (!planned.length) {
+			connectNotice = 'No new compatible audio connections (already connected, unavailable channels, or a cycle).';
+			return;
+		}
+		editGraph(() => {
+			const added = planned.map((connection) => ({ ...connection, id: createId(), type: 'channel', animated: edgeSettings.animated }));
+			added.forEach((e) => seenEdgeIds.add(e.id));
+			edges = [...edges, ...added];
+		});
 	}
 
 	function patchNodeData(nodeId: string, patch: Record<string, unknown>) {
@@ -448,6 +508,16 @@
 		untrack(() => commit(getSnapshot()));
 	}
 
+	function editGraph(edit: () => void) {
+		flushPendingCommit();
+		captureIfChanged(getSnapshot());
+		// Settle data derived from newly grown sockets inside the same undo step.
+		flushSync(edit);
+		clearTimeout(saveTimer);
+		saveTimer = undefined;
+		commit(getSnapshot());
+	}
+
 	function undo() {
 		flushPendingCommit();
 		if (cursor === 0) return;
@@ -543,6 +613,21 @@
 		const t = e.target as HTMLElement | null;
 		const tag = t?.tagName?.toLowerCase();
 		const inField = tag === 'input' || tag === 'textarea' || tag === 'select' || t?.isContentEditable;
+		const onCanvas = !!t && editorElement.contains(t) && !t.closest(INTERACTIVE) && !modalManager.isOpen && !contextMenu;
+
+		if (e.key === 'Escape') {
+			cancelConnect();
+			connectNotice = '';
+		}
+		const shortcut = canvasShortcut(e, onCanvas && !connectDrag && !e.defaultPrevented);
+		if (shortcut) {
+			e.preventDefault();
+			if (!e.repeat) {
+				if (shortcut === 'toggleGrid') toggleGrid();
+				else duplicateSelection();
+			}
+			return;
+		}
 
 		if (e.key === 'Escape' && channelSelection.nodeId) {
 			channelSelection.clear();
@@ -556,7 +641,7 @@
 		}
 
 		const mod = e.metaKey || e.ctrlKey;
-		if (!mod || inField) return;
+		if (!mod || inField || modalManager.isOpen) return;
 
 		if (e.key === 'c' || e.key === 'C') {
 			if (!nodes.some((n) => n.selected)) return;
@@ -628,10 +713,26 @@
 	});
 </script>
 
-<svelte:window onmousedown={closeContextMenu} />
+<svelte:window onmousedown={closeContextMenu} onpointermove={onConnectMove} onpointerup={onConnectEnd} onpointercancel={cancelConnect} onblur={cancelConnect} />
 
 <div class="flex h-full w-full">
-	<div class="relative flex-1" role="region" aria-label="Flow editor" ondragover={onDragOver} ondrop={onDrop}>
+	<div
+		bind:this={editorElement}
+		class="flow-editor relative flex-1"
+		class:connecting={connectDrag !== null}
+		role="region"
+		aria-label="Flow editor"
+		tabindex="-1"
+		onpointerdowncapture={onEditorPointerDown}
+		onlostpointercapture={cancelConnect}
+		onmousedowncapture={(e) => {
+			if (connectDrag) {
+				e.preventDefault();
+				e.stopPropagation();
+			}
+		}}
+		ondragover={onDragOver}
+		ondrop={onDrop}>
 		<SvelteFlow
 			proOptions={{ hideAttribution: true }}
 			class="!bg-background"
@@ -642,6 +743,13 @@
 			defaultEdgeOptions={{ animated: edgeSettings.animated, type: 'channel' }}
 			connectionLineComponent={ConnectionLine}
 			deleteKey={['Delete', 'Backspace']}
+			selectionOnDrag
+			panOnDrag={[1]}
+			panActivationKey={null}
+			panOnScroll={scrollPans}
+			zoomOnScroll={!scrollPans}
+			zoomOnPinch
+			noPanClass="nowheel"
 			onnodecontextmenu={onNodeContextMenu}
 			onedgecontextmenu={onEdgeContextMenu}
 			onpanecontextmenu={onPaneContextMenu}
@@ -651,11 +759,39 @@
 			onmovestart={closeContextMenu}
 			snapGrid={appSettings.snapToGrid ? [appSettings.gridSize, appSettings.gridSize] : undefined}
 			fitView>
-			<Background patternClass="fill-neutral-200" />
+			<Background gap={appSettings.gridSize} patternClass="fill-neutral-200" />
 			<Controls />
 			<EdgeRectSelect />
 			<OrphanEdges onDelete={deleteEdge} />
 		</SvelteFlow>
+
+		<button
+			type="button"
+			class="absolute top-3 right-3 z-10 rounded-lg border border-neutral-400 bg-neutral-100 px-3 py-1.5 text-xs text-neutral-1000 shadow-sm"
+			aria-pressed={appSettings.snapToGrid}
+			title="Snap to grid (Shift+Tab on canvas)"
+			onclick={toggleGrid}>
+			Grid {appSettings.snapToGrid ? `ON · ${appSettings.gridSize}` : 'OFF'}
+		</button>
+		{#if connectDrag}
+			<svg class="pointer-events-none absolute inset-0 z-20 h-full w-full" aria-hidden="true">
+				<line
+					x1={connectDrag.startX}
+					y1={connectDrag.startY}
+					x2={connectDrag.x}
+					y2={connectDrag.y}
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-dasharray="5 4" />
+			</svg>
+		{/if}
+		{#if connectNotice}
+			<p
+				role="status"
+				class="pointer-events-none absolute top-14 right-3 z-10 max-w-xs rounded-lg border border-neutral-400 bg-neutral-100 p-2 text-xs text-neutral-1000">
+				{connectNotice}
+			</p>
+		{/if}
 
 		{#if channelSelection.channels.length > 0}
 			<div
@@ -695,3 +831,24 @@
 		</Menu>
 	</div>
 {/if}
+
+<style>
+	.flow-editor :global(.svelte-flow__pane),
+	.flow-editor :global(.svelte-flow__node.draggable) {
+		cursor: default;
+	}
+	/* Selected groups must not cover node bodies or the background with a drag surface. */
+	.flow-editor :global(.svelte-flow__selection-wrapper),
+	.flow-editor :global(.svelte-flow__selection-wrapper .svelte-flow__selection) {
+		pointer-events: none;
+	}
+	.flow-editor :global(.svelte-flow__node.draggable.dragging) {
+		cursor: move;
+	}
+	.flow-editor :global(.svelte-flow__pane.dragging) {
+		cursor: grabbing;
+	}
+	.flow-editor.connecting :global(.svelte-flow__node) {
+		cursor: crosshair;
+	}
+</style>
