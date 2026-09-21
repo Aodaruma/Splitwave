@@ -1,3 +1,5 @@
+import { readEq } from '$lib/modules/pipeline/eq';
+import type { EqData } from '$lib/modules/pipeline/generated/EqData';
 import { LazyStore } from '@tauri-apps/plugin-store';
 import { createId } from '@paralleldrive/cuid2';
 import type { Preset, PresetData, PresetKind } from './types';
@@ -13,7 +15,12 @@ async function userPresets(): Promise<Preset[]> {
 	return entries
 		.filter(([k]) => k.startsWith(KEY_PREFIX))
 		.map(([, v]) => v)
-		.filter((p) => !isOutdated(p));
+		.filter((p) => p.kind === 'eq' || !isOutdated(p))
+		.map((p) => {
+			if (p.kind !== 'eq') return p;
+			const { bypassed: _, ...data } = readEq(p.data as Partial<EqData>);
+			return { ...p, data };
+		});
 }
 
 export const methods = {

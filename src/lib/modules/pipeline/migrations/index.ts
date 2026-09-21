@@ -1,3 +1,4 @@
+import { withDefaults } from '../defaults';
 import type { Pipeline } from '../types';
 import { PIPELINE_VERSION, versionOf } from '../version';
 import { migrateChannelRouting } from './v1_channel_routing';
@@ -11,7 +12,8 @@ export interface Migration {
 
 export const MIGRATIONS: Migration[] = [
 	{ to: 1, migrate: migrateChannelRouting },
-	{ to: 2, migrate: migrateFileRecordingMode }
+	{ to: 2, migrate: migrateFileRecordingMode },
+	{ to: 3, migrate: (pipeline) => ({ ...pipeline, nodes: pipeline.nodes.map((n) => (n.kind === 'eq' ? { ...n, data: withDefaults('eq', n.data) } : n)) }) }
 ];
 
 /** Runs every step above the pipeline's own version. Additive field changes

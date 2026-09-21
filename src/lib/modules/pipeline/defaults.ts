@@ -1,3 +1,4 @@
+import { defaultEq, readEq } from './eq';
 import type { NodeDataMap, NodeKind } from './types';
 
 /** Lives here rather than in the flow registry so migrations can reach it
@@ -20,7 +21,7 @@ export const DEFAULT_NODE_DATA: { [K in NodeKind]: NodeDataMap[K] } = {
 	mute: { muted: false, bypassed: false },
 	channelBalance: { leftGainDb: 0, rightGainDb: 0, bypassed: false },
 	saturator: { thresholdDb: -0.3, driveDb: 0, bypassed: false },
-	eq: { gainsDb: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0], bypassed: false },
+	eq: defaultEq(),
 	levelMeter: {},
 	lufsMeter: { target: -14 },
 	waveform: { segs: 4 },
@@ -80,5 +81,6 @@ export const DEFAULT_NODE_DATA: { [K in NodeKind]: NodeDataMap[K] } = {
 export function withDefaults<K extends NodeKind>(kind: K, stored: unknown): NodeDataMap[K] {
 	const base = DEFAULT_NODE_DATA[kind];
 	if (!base || typeof stored !== 'object' || stored === null) return base;
+	if (kind === 'eq') return readEq(stored) as NodeDataMap[K];
 	return { ...base, ...(stored as object) } as NodeDataMap[K];
 }

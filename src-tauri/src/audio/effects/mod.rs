@@ -167,8 +167,7 @@ pub enum EffectControl {
         drive: Arc<AtomicU32>,
     },
     Eq {
-        /// One gain atomic per ISO octave band; see EQ_FREQUENCIES_HZ for order.
-        gains: [Arc<AtomicU32>; 10],
+        controls: eq::EqControls,
     },
     Limiter {
         ceiling: Arc<AtomicU32>,
@@ -250,15 +249,7 @@ impl EffectControl {
                     store_f32(drive, db_to_linear(db));
                 }
             }
-            EffectControl::Eq { gains } => {
-                if let Some(arr) = data.get("gainsDb").and_then(Value::as_array) {
-                    for (i, slot) in gains.iter().enumerate() {
-                        if let Some(v) = arr.get(i).and_then(Value::as_f64) {
-                            store_f32(slot, v as f32);
-                        }
-                    }
-                }
-            }
+            EffectControl::Eq { controls } => controls.apply_update(data),
             EffectControl::Limiter {
                 ceiling,
                 release_ms,
@@ -588,14 +579,18 @@ pub fn instantiate_effect(
             }
         },
         EffectSpec::Eq(d) => match registry.controls.get(node_id) {
-            Some(EffectControl::Eq { gains }) => mk(
-                RuntimeEffect::Eq(EqEffect::from_state(gains.clone(), sample_rate)),
-                None,
-                None,
-                None,
-                None,
-                None,
-            ),
+            Some(EffectControl::Eq { controls })
+                if controls.mode == d.mode && controls.sample_rate == sample_rate =>
+            {
+                mk(
+                    RuntimeEffect::Eq(EqEffect::from_state(controls.clone(), sample_rate)),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            }
             _ => {
                 let (e, c) = EqEffect::new(d, sample_rate);
                 registry.controls.insert(node_id.to_string(), c.clone());

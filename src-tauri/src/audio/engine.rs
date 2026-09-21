@@ -37,7 +37,7 @@ pub enum Command {
     UpdateEffect {
         node_id: String,
         data: serde_json::Value,
-        reply: Sender<AppResult<()>>,
+        reply: Sender<AppResult<Option<u32>>>,
     },
     /// Seek an audio-file input to a given frame index. Silent no-op when
     /// the node isn't an AudioFile.
@@ -125,10 +125,10 @@ pub fn run(rx: Receiver<Command>) {
                 data,
                 reply,
             } => {
-                if let Some(p) = &active {
-                    p.update_effect(&node_id, &data);
-                }
-                let _ = reply.send(Ok(()));
+                let result = active
+                    .as_ref()
+                    .map_or(Ok(None), |p| p.update_effect(&node_id, &data));
+                let _ = reply.send(result);
             }
             Command::SeekAudioFile {
                 node_id,

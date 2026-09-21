@@ -63,8 +63,8 @@ export const methods = {
 	 *  pipeline is active — callers should fall back to `startPipeline`. */
 	reconcilePipeline: (graph: StartPipelinePayload): Promise<void> =>
 		invoke('reconcile_pipeline', { graph: { sampleRate: appSettings.pipelineSampleRate, ...graph } }),
-	/** No-op when the pipeline isn't running; callers can fire-and-forget. */
-	updateEffect: (nodeId: string, data: Record<string, unknown>): Promise<void> => invoke('update_effect', { nodeId, data }),
+	/** Returns the running EQ's processing rate (null otherwise). An empty patch only queries it. */
+	updateEffect: (nodeId: string, data: Record<string, unknown>): Promise<number | null> => invoke('update_effect', { nodeId, data }),
 	/** Seek an AudioFile input. No-op when not running. */
 	seekAudioFile: (nodeId: string, frame: number): Promise<void> => invoke('seek_audio_file', { nodeId, frame }),
 	/** Live loop toggle for an AudioFile input. No-op when not running. */
