@@ -10,6 +10,8 @@
 	import { UndoRedo, SavedIndicator, SnapshotHistory } from '$lib/modules/flow/ui';
 	import { ActivationButton } from '$lib/modules/audio/ui';
 	import { ArrowLeft } from '$lib/components/icons';
+	import { methods as pipelineMethods } from '$lib/modules/pipeline/methods';
+	import { pipelineStore } from '$lib/modules/pipeline/stores.svelte';
 	let interactive = $state(false);
 
 	const SPLITWAVE_DEVICE = { id: 'splitwave', name: 'Splitwave' };
@@ -32,7 +34,7 @@
 		nodes: [
 			{ id: 'preview-input', kind: 'microphone', data: { ...defaultDataFor('microphone'), deviceId: 'splitwave' }, position: { x: 0, y: 0 } },
 			{ id: 'preview-eq', kind: 'eq', data: defaultDataFor('eq'), position: { x: 320, y: 0 } },
-			{ id: 'preview-gain', kind: 'gain', data: defaultDataFor('gain'), position: { x: 700, y: 200 } },
+			{ id: 'preview-gain', kind: 'gain', data: defaultDataFor('gain'), position: { x: 760, y: 200 } },
 			{ id: 'preview-output', kind: 'speaker', data: { ...defaultDataFor('speaker'), deviceId: 'splitwave' }, position: { x: 1050, y: 0 } }
 		],
 		edges: [1, 2].map((ch) => ({
@@ -43,6 +45,16 @@
 			targetHandle: `ch${ch}`
 		}))
 	};
+	let displayedDemo = $state.raw(demo);
+	async function openDemo() {
+		displayedDemo = (await pipelineMethods.get(demo.id)) ?? demo;
+		interactive = true;
+	}
+	async function closeDemo() {
+		const snapshot = pipelineStore.editorActions?.getSnapshot();
+		if (snapshot) await pipelineStore.save(snapshot);
+		interactive = false;
+	}
 	const values = new Map<string, unknown>([['pipeline:preview', demo]]);
 	mockIPC(
 		(cmd, args) => {
@@ -57,7 +69,7 @@
 			if (cmd === 'is_pipeline_running') return false;
 			if (cmd === 'plugin:store|entries') return [...values.entries()];
 			if (cmd === 'plugin:store|get') return [values.get(String(payload?.key)), values.has(String(payload?.key))];
-			if (cmd === 'plugin:store|set') values.set(String(payload?.key), payload?.value);
+			if (cmd === 'plugin:store|set') values.set(String(payload?.key), JSON.parse(JSON.stringify(payload?.value)));
 			if (cmd === 'plugin:store|delete') return values.delete(String(payload?.key));
 			return undefined;
 		},
@@ -79,7 +91,7 @@
 {#if interactive}
 	<Header>
 		{#snippet left()}
-			<button class="button-header" onclick={() => (interactive = false)}><ArrowLeft class="size-4" /> Back</button>
+			<button class="button-header" onclick={closeDemo}><ArrowLeft class="size-4" /> Back</button>
 			<span class="text-[13px]">Editor preview</span>
 		{/snippet}
 		{#snippet right()}
@@ -88,8 +100,8 @@
 			</div>
 		{/snippet}
 	</Header>
-	<div class="flex min-h-0 w-full flex-1"><Flow pipeline={demo} /></div>
+	<div class="flex min-h-0 w-full flex-1"><Flow pipeline={displayedDemo} /></div>
 {:else}
-	<button class="button-main primary m-4 self-start" onclick={() => (interactive = true)}>Open interactive editor demo</button>
+	<button class="button-main primary m-4 self-start" onclick={openDemo}>Open interactive editor demo</button>
 	<div class="min-h-0 flex-1 overflow-auto"><Grid /></div>
 {/if}
