@@ -435,7 +435,7 @@
 	let suppressRightMenu = false;
 	let destroying = false;
 	const wireGeometry = new Map<SVGPathElement, { key: string; points: Point[] }>();
-	let dragCandidate: { pointerId: number; shake: ReturnType<typeof shakeDetector> } | null = null;
+	let dragCandidate: { pointerId: number; shake: ReturnType<typeof shakeDetector>; detach: boolean } | null = null;
 	let nodeMotion = $state.raw<{
 		pointerId: number;
 		shake: ReturnType<typeof shakeDetector>;
@@ -569,9 +569,9 @@
 			...dragCandidate,
 			moved: moved.filter((n) => n.type !== 'groupBoundary'),
 			positions: new Map(moved.map((n) => [n.id, { ...n.position }])),
-			detach: false,
 			cancelled: false
 		};
+		if (nodeMotion.detach) connectNotice = 'Release to detach all editable connections and move. Esc cancels.';
 	}
 
 	function restoreMotionPositions() {
@@ -665,17 +665,23 @@
 			editorElement.setPointerCapture(event.pointerId);
 			return;
 		}
-		if (event.button !== 0) return;
-		editorElement.focus({ preventScroll: true });
+		if (event.button === 0) editorElement.focus({ preventScroll: true });
 		const node = bodyNode(target);
 		if (!node?.dataset.id || nodes.find((n) => n.id === node.dataset.id)?.type === 'groupBoundary') return;
-		if (!event.altKey) {
-			dragCandidate = { pointerId: event.pointerId, shake: shakeDetector({ x: event.clientX, y: event.clientY }, event.timeStamp) };
+		if (event.button === 0) {
+			dragCandidate = {
+				pointerId: event.pointerId,
+				shake: shakeDetector({ x: event.clientX, y: event.clientY }, event.timeStamp),
+				detach: event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey
+			};
 			return;
 		}
+		if (event.button !== 2 || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
 		event.preventDefault();
 		event.stopPropagation();
+		editorElement.focus({ preventScroll: true });
 		closeContextMenu();
+		suppressRightMenu = true;
 		connectNotice = '';
 		const rect = editorElement.getBoundingClientRect();
 		connectDrag = {
@@ -691,6 +697,10 @@
 
 	function onConnectMove(event: PointerEvent) {
 		if (!connectDrag || connectDrag.pointerId !== event.pointerId) return;
+		if (!(event.buttons & 2)) {
+			cancelConnect();
+			return;
+		}
 		const rect = editorElement.getBoundingClientRect();
 		connectDrag = { ...connectDrag, x: event.clientX - rect.left, y: event.clientY - rect.top };
 	}
@@ -719,7 +729,7 @@
 	}
 
 	function onConnectEnd(event: PointerEvent) {
-		if (!connectDrag || connectDrag.pointerId !== event.pointerId) return;
+		if (!connectDrag || connectDrag.pointerId !== event.pointerId || event.button !== 2) return;
 		const source = connectDrag.source;
 		const moved = Math.hypot(connectDrag.x - connectDrag.startX, connectDrag.y - connectDrag.startY) >= 3;
 		const target = bodyNode(document.elementFromPoint(event.clientX, event.clientY))?.dataset.id;

@@ -2,13 +2,14 @@
 
 These gestures operate in the current editor scope. Focus the canvas or a node body; text fields, node controls, handles, resize controls and modal dialogs retain their own interactions.
 
-| Gesture                             | Action                                                                                                           |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Ctrl + right drag                   | Draw a freehand stroke across cables. Release to cut every crossed editable cable in one undo step.              |
-| Alt + S                             | Switch the incoming assignments of exactly one selected node.                                                    |
-| Left drag + deliberate shake        | Move nodes and detach all their editable incoming, outgoing and internal selected-group cables in one undo step. |
-| Alt + left drag between node bodies | Existing automatic connection gesture.                                                                           |
-| Ordinary right click                | Existing context menu.                                                                                           |
+| Gesture                              | Action                                                                                                           |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| Ctrl + right drag                    | Draw a freehand stroke across cables. Release to cut every crossed editable cable in one undo step.              |
+| Alt + S                              | Switch the incoming assignments of exactly one selected node.                                                    |
+| Left drag + deliberate shake         | Move nodes and detach all their editable incoming, outgoing and internal selected-group cables in one undo step. |
+| Alt + left drag                      | Move nodes and detach all their editable cables on release, in one undo step.                                    |
+| Alt + right drag between node bodies | Automatically connect matching audio channels while preserving L/R.                                              |
+| Ordinary right click                 | Existing context menu.                                                                                           |
 
 Cutting follows the actual rendered SVG paths, including straight, Bézier, step, rounded-step and broken-connection wires. Geometry includes the SVG transform, viewport zoom/pan and the editor's screen offset. Curves are sampled at at most 2 CSS pixels of arc length, with a 1 pixel intersection tolerance. The stroke previews the pending cut count; cables remain connected until release. Esc, pointer cancellation, lost pointer capture, window blur or opening a modal discards the gesture. Its release does not open a context menu; the next ordinary right click does.
 
@@ -22,7 +23,7 @@ Boundary nodes and their noneditable exposed-port mapping wires are excluded. A 
 
 ## References and verification
 
-Behavior references: Blender's [Cut Links and Detach Links](https://docs.blender.org/manual/en/3.4/interface/controls/nodes/editing.html) and Node Wrangler's [Swap Links and Lazy Connect](https://docs.blender.org/manual/en/4.0/addons/node/node_wrangler.html). Implementation is independent; no Blender GPL source was copied. Alt + left automatic connection is retained; shake provides detachment without competing for that gesture.
+Behavior references: Blender's [Cut Links and Detach Links](https://docs.blender.org/manual/en/3.4/interface/controls/nodes/editing.html) and Node Wrangler's [Swap Links and Lazy Connect](https://docs.blender.org/manual/en/4.0/addons/node/node_wrangler.html). Implementation is independent; no Blender GPL source was copied. Alt + left detaches; Alt + right connects. Hold Alt before starting the drag; additional modifiers retain their existing behaviors. An Alt + left click without movement leaves cables intact. The existing Alt multi-channel socket selection remains unchanged.
 
 Developed on Windows. Pure geometry, input-assignment, shortcut-scope and shake/detach tests run with `bun test`; frontend validation uses `bun run check`. Native interaction and audio playback checks on Windows, macOS and Linux are not covered by these tests.
 

@@ -19,9 +19,14 @@
 			body: 'Left-drag the background to box-select, left-drag a node body to move it, and middle-drag to pan. Right-click opens the context menu. On macOS, scroll pans and pinch zooms; on Windows/Linux, the wheel zooms. Settings → Canvas lets you choose Pan for a trackpad or Zoom for a mouse.'
 		},
 		{
-			title: 'Connect node bodies with Alt-drag',
+			title: 'Connect node bodies with Alt + right-drag',
 			video: null,
-			body: 'Hold Alt (Option on macOS) and left-drag a node body onto another node body. Audio flows from the dragged node to the destination, without moving either node. Normal audio channels connect together in one undo step, preserving L/R and channel numbers within the available capacity. Inputs can still mix several sources. Existing wires remain; duplicate connections, cycles, self-connections, sidechains and individual peer routes are skipped. Channels must be available on the source. Controls and sockets keep their own gestures. Escape, releasing outside a node, or switching windows cancels.'
+			body: 'Hold Alt (Option on macOS) and right-drag a node body onto another node body. Audio flows from the dragged node to the destination, without moving either node. Normal audio channels connect together in one undo step, preserving L/R and channel numbers within the available capacity. Inputs can still mix several sources. Existing wires remain; duplicate connections, cycles, self-connections, sidechains and individual peer routes are skipped. Channels must be available on the source. Controls and sockets keep their own gestures. Escape, releasing outside a node, or switching windows cancels.'
+		},
+		{
+			title: 'Cut, detach and switch connections',
+			video: null,
+			body: 'Ctrl + right-drag across cables to cut them on release. Alt (Option) + left-drag a node body, or deliberately shake it while dragging, to detach its connections and move it. Escape cancels; one Undo restores the move and cables. Alt+S switches the inputs of one selected node: a single input advances, two exchange, and more rotate through the connected compatible inputs. Group boundary mappings are protected.'
 		},
 		{
 			title: 'Toggle the snap grid',
