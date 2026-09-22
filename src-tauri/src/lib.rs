@@ -248,6 +248,7 @@ pub fn run() {
             let _ = desktop::show_main_window(app.clone());
         }))
         .manage(desktop::DesktopState::default())
+        .manage(audio::monitor_targets::MonitorTargets::default())
         .on_window_event(desktop::window_event)
         .setup(|app| {
             info!("app started");
@@ -308,6 +309,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState::spawn())
         .invoke_handler(tauri::generate_handler![
+            audio::monitor_targets::set_monitor_targets,
             desktop::sync_desktop,
             desktop::show_main_window,
             desktop::hide_main_window,

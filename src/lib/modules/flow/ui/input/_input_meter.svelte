@@ -95,10 +95,14 @@
 		holds = nextHolds;
 	}
 
-	tauriListen<MeterTick>('audio://meter', (p) => {
-		if (p.nodeId !== nodeId) return;
-		update(p.peaks, performance.now());
-	});
+	tauriListen<MeterTick>(
+		'audio://meter',
+		(p) => {
+			if (p.nodeId !== nodeId) return;
+			update(p.peaks, performance.now());
+		},
+		() => nodeId
+	);
 </script>
 
 <div class="flex w-full flex-col gap-1" aria-label="Live level">

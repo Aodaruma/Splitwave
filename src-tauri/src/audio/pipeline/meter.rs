@@ -4,7 +4,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tracing::warn;
 
 use crate::audio::effects::{GrHandle, LufsHandle, MeterHandle, WaveformHandle};
@@ -349,8 +349,15 @@ pub(super) fn spawn_meter_thread(
         .spawn(move || {
             while !stop_thread.load(Ordering::SeqCst) {
                 thread::sleep(METER_TICK);
+                let targets = app
+                    .state::<crate::audio::monitor_targets::MonitorTargets>()
+                    .snapshot();
+                let wanted = |id: &str| targets.as_ref().is_some_and(|nodes| nodes.contains(id));
                 for m in &meters {
                     let snap = m.snapshot_and_decay();
+                    if !wanted(&m.node_id) {
+                        continue;
+                    }
                     let _ = app.emit(
                         METER_EVENT,
                         json!({
@@ -361,6 +368,9 @@ pub(super) fn spawn_meter_thread(
                     );
                 }
                 for l in &lufs {
+                    if !wanted(&l.node_id) {
+                        continue;
+                    }
                     let snap = l.snapshot();
                     let _ = app.emit(
                         LUFS_EVENT,
@@ -382,11 +392,17 @@ pub(super) fn spawn_meter_thread(
                     );
                 }
                 for g in &gr_handles {
+                    if !wanted(&g.node_id) {
+                        continue;
+                    }
                     let gr_lin =
                         f32::from_bits(g.gr_lin.load(std::sync::atomic::Ordering::Relaxed));
                     let _ = app.emit(GR_EVENT, json!({ "nodeId": g.node_id, "grLin": gr_lin }));
                 }
                 for s in &scopes {
+                    if !wanted(&s.node_id) {
+                        continue;
+                    }
                     // Scopes emit a delta since the last tick; spectrum emits the
                     // full contiguous window it needs for its FFT.
                     let (start_frame, interleaved, ch) = if s.is_spectrum() {

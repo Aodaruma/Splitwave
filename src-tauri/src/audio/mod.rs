@@ -9,6 +9,7 @@ pub mod health;
 pub mod input_bridge;
 #[cfg(target_os = "macos")]
 pub mod macos_hal;
+pub mod monitor_targets;
 pub mod netaudio;
 pub mod permission;
 pub mod pipeline;

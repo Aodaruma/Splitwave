@@ -43,6 +43,8 @@ pub fn show_main_window(app: AppHandle) -> Result<(), String> {
         .ok_or("Main window is unavailable")?;
     window.show().map_err(|e| e.to_string())?;
     window.unminimize().map_err(|e| e.to_string())?;
+    app.state::<crate::audio::monitor_targets::MonitorTargets>()
+        .set_visible(true);
     window.set_focus().map_err(|e| e.to_string())
 }
 
@@ -76,7 +78,10 @@ pub fn hide_main_window(app: AppHandle) -> Result<(), String> {
     app.get_webview_window("main")
         .ok_or("Main window is unavailable")?
         .hide()
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    app.state::<crate::audio::monitor_targets::MonitorTargets>()
+        .set_visible(false);
+    Ok(())
 }
 
 #[tauri::command]
@@ -187,6 +192,18 @@ fn build_tray(app: &AppHandle, config: &TrayState) -> tauri::Result<()> {
 pub fn window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     if window.label() != "main" {
         return;
+    }
+    if matches!(
+        event,
+        tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Focused(_)
+    ) {
+        // Query native state on its event thread, never from the meter/audio worker.
+        let visible =
+            window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
+        window
+            .app_handle()
+            .state::<crate::audio::monitor_targets::MonitorTargets>()
+            .set_visible(visible);
     }
     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
         let app = window.app_handle();

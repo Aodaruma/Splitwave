@@ -34,10 +34,14 @@
 	let stateGain = $state(1);
 	let gateState = $derived(stateGain > 0.85 ? 'open' : stateGain > 0.15 ? 'hold' : 'closed');
 
-	tauriListen<{ nodeId: string; grLin: number }>('audio://gr', (p) => {
-		if (p.nodeId !== id) return;
-		stateGain = Math.max(0, Math.min(1, p.grLin));
-	});
+	tauriListen<{ nodeId: string; grLin: number }>(
+		'audio://gr',
+		(p) => {
+			if (p.nodeId !== id) return;
+			stateGain = Math.max(0, Math.min(1, p.grLin));
+		},
+		() => id
+	);
 
 	const W = 150,
 		H = 70;

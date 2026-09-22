@@ -227,10 +227,14 @@
 		sampleRate: number;
 	}
 
-	tauriListen<ScopeTick>('audio://scope', (p) => {
-		if (p.nodeId !== id) return;
-		analyze(p.data, p.sampleRate);
-	});
+	tauriListen<ScopeTick>(
+		'audio://scope',
+		(p) => {
+			if (p.nodeId !== id) return;
+			analyze(p.data, p.sampleRate);
+		},
+		() => id
+	);
 
 	onMount(() => {
 		rafId = requestAnimationFrame(frame);

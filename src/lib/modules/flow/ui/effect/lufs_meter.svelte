@@ -234,23 +234,27 @@
 	let unlistenReset: (() => void) | undefined;
 
 	unlistenReset = onNodeAction(id, 'resetPeaks', () => resetPeaks());
-	tauriListen<LufsTick>('audio://lufs', (p) => {
-		if (p.nodeId !== id) return;
-		momentary = p.momentary;
-		shortterm = p.shortterm;
-		integrated = p.integrated;
-		holdM = Math.max(holdM, momentary);
-		holdS = Math.max(holdS, shortterm);
-		holdI = Math.max(holdI, integrated);
-		tpMax = Math.max(tpMax, p.tpL, p.tpR);
-		lra = p.lra;
-		rms = p.rms;
-		noiseFloor = p.noiseFloor;
-		samplePeak = p.samplePeak;
-		dcOffset = p.dcOffset;
-		correlation = p.correlation;
-		clips = p.clips;
-	});
+	tauriListen<LufsTick>(
+		'audio://lufs',
+		(p) => {
+			if (p.nodeId !== id) return;
+			momentary = p.momentary;
+			shortterm = p.shortterm;
+			integrated = p.integrated;
+			holdM = Math.max(holdM, momentary);
+			holdS = Math.max(holdS, shortterm);
+			holdI = Math.max(holdI, integrated);
+			tpMax = Math.max(tpMax, p.tpL, p.tpR);
+			lra = p.lra;
+			rms = p.rms;
+			noiseFloor = p.noiseFloor;
+			samplePeak = p.samplePeak;
+			dcOffset = p.dcOffset;
+			correlation = p.correlation;
+			clips = p.clips;
+		},
+		() => id
+	);
 
 	onDestroy(() => {
 		unlistenReset?.();
