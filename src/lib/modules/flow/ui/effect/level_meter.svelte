@@ -130,11 +130,15 @@
 	}
 
 	unlistenReset = onNodeAction(id, 'resetPeaks', () => resetPeaks());
-	tauriListen<MeterTick>('audio://meter', (p) => {
-		if (p.nodeId !== id) return;
-		targetPeaks = p.peaks;
-		targetRms = p.rms;
-	});
+	tauriListen<MeterTick>(
+		'audio://meter',
+		(p) => {
+			if (p.nodeId !== id) return;
+			targetPeaks = p.peaks;
+			targetRms = p.rms;
+		},
+		() => id
+	);
 
 	onMount(() => {
 		rafId = requestAnimationFrame(tick);

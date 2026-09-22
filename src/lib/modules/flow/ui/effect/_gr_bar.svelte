@@ -24,11 +24,15 @@
 		rafId = requestAnimationFrame(tick);
 	}
 
-	tauriListen<{ nodeId: string; grLin: number }>('audio://gr', (p) => {
-		if (p.nodeId !== nodeId) return;
-		const lin = Math.max(1e-6, Math.min(1, p.grLin));
-		targetGrDb = -20 * Math.log10(lin);
-	});
+	tauriListen<{ nodeId: string; grLin: number }>(
+		'audio://gr',
+		(p) => {
+			if (p.nodeId !== nodeId) return;
+			const lin = Math.max(1e-6, Math.min(1, p.grLin));
+			targetGrDb = -20 * Math.log10(lin);
+		},
+		() => nodeId
+	);
 
 	onMount(() => {
 		rafId = requestAnimationFrame(tick);

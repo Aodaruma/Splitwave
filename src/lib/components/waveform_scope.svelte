@@ -1306,7 +1306,11 @@
 
 	onMount(() => {
 		ctx = canvas.getContext('2d');
-		tauriListen<ScopeTick>('audio://scope', (p) => onScope(p));
+		tauriListen<ScopeTick>(
+			'audio://scope',
+			(p) => onScope(p),
+			() => nodeId
+		);
 		tauriListen<RecorderProgress>('audio://recorder_progress', (p) => onProgress(p));
 		ro = new ResizeObserver((entries) => {
 			const rect = entries[0].contentRect;
