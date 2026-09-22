@@ -108,7 +108,7 @@
 				stroke-linecap="round"
 				stroke-dasharray="{Math.abs(arcValue - arcStart) * 100} 100"
 				stroke-dashoffset={-Math.min(arcStart, arcValue) * 100} />
-			<circle cx="26" cy="26" r="16" class="fill-neutral-200 stroke-neutral-500" />
+			<circle cx="26" cy="26" r="16" class="fill-neutral-200 stroke-neutral-500" fill-opacity={disabled ? 0.25 : 1} stroke-opacity={disabled ? 0.4 : 1} />
 			<path d="M26 14V21" transform="rotate({angle} 26 26)" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
 		</svg>
 	</div>

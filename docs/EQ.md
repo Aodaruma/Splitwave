@@ -12,7 +12,7 @@ Minor frequency ticks and adaptive labels share the points' logarithmic axis. De
 - Pipeline schema 3 adds explicit legacy mode and the inactive parametric defaults. Older builds with future-version protection will not open these pipelines. Existing factory and user EQ presets retain the graphic algorithm; old EQ presets are not discarded merely for lacking a preset version. Preset recall preserves the node's bypass state.
 - Legacy graphic mode uses fixed graph points and a gain knob. Its steady-state audio, including the original phase interaction, is preserved. The displayed response includes that phase; zero graphic gains do not imply a magnitude-flat ten-band sum.
 - Saved arbitrary parametric shapes also remain unchanged, including original defaults when fields are absent. Compatibility views display the saved shapes without a shape or mode selector. Applying an existing preset recalls its original algorithm and parameters. Both parameter sets remain saved.
-- The explicit "Initialize Channel EQ" action resets the curve to the fixed eight-band defaults; it is not an equivalent sound conversion. Undo restores the previous settings.
+- "Reset curve" restores the fixed eight-band defaults (1 low cut, 2 low shelf, 3–6 Bell, 7 high shelf, 8 high cut); it is not an equivalent sound conversion for a compatibility EQ. Undo restores the previous settings. The adjacent Default / Voice dropdown only changes the frequency guide.
 
 ## DSP and limits
 

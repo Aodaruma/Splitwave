@@ -220,31 +220,22 @@
 				{channel ? 'Channel EQ · 8' : parametric ? 'Compatibility · saved shapes' : 'Legacy EQ · graphic10'}
 			</span>
 		</div>
-		{#if !channel}
-			<div class="flex items-center justify-between gap-2 text-[10px] text-neutral-1100">
-				<span>{parametric ? 'Original band shapes and sound retained.' : 'Original 10-band crossover sound retained.'}</span>
-				<button
-					type="button"
-					class="nodrag nopan nowheel shrink-0 rounded border border-neutral-500 px-2 py-1 hover:bg-neutral-300 focus-visible:outline-2 focus-visible:outline-amber-600 disabled:cursor-default disabled:opacity-50"
-					disabled={eq.bypassed}
-					title="Replace this EQ with the standard eight-band Channel EQ. Resets the curve to flat; Undo restores the saved EQ."
-					onclick={initialize}>Initialize Channel EQ · resets curve</button>
-			</div>
-		{/if}
-		<div class="flex items-center justify-between gap-2 text-[10px] text-neutral-1100">
-			<span title="Approximate frequency ranges for reference; does not change audio">Frequency guide</span>
-			<div class="flex rounded border border-neutral-400 p-0.5" role="group" aria-label="Frequency guide (display only)">
-				{#each ['default', 'voice'] as choice}
-					<button
-						type="button"
-						class="nodrag nopan nowheel rounded px-2 py-1 focus-visible:outline-2 focus-visible:outline-amber-600 {guide === choice
-							? 'bg-neutral-300 font-semibold text-neutral-1200'
-							: 'hover:bg-neutral-200'}"
-						aria-pressed={guide === choice}
-						title="{choice === 'default' ? 'Default' : 'Voice'}: approximate frequency ranges; does not change audio"
-						onclick={() => setGuide(choice as EqGuide)}>{choice === 'default' ? 'Default' : 'Voice'}</button>
-				{/each}
-			</div>
+		<div class="flex items-center justify-end gap-2 text-[10px] text-neutral-1100">
+			<button
+				type="button"
+				class="nodrag nopan nowheel shrink-0 rounded border border-neutral-500 px-2 py-1 hover:bg-neutral-300 focus-visible:outline-2 focus-visible:outline-amber-600 disabled:cursor-default disabled:opacity-50"
+				disabled={eq.bypassed}
+				title="Reset to eight bands: 1 Low cut, 2 Low shelf, 3–6 Bell, 7 High shelf, 8 High cut. Resets all values; Undo restores this EQ."
+				onclick={initialize}>Reset curve</button>
+			<select
+				class="nodrag nopan nowheel rounded border border-neutral-500 bg-neutral-100 px-2 py-1 text-neutral-1200 focus-visible:outline-2 focus-visible:outline-amber-600"
+				aria-label="Frequency guide"
+				title="Approximate frequency ranges for reference; does not change audio"
+				value={guide}
+				onchange={(e) => setGuide(e.currentTarget.value as EqGuide)}>
+				<option value="default">Default</option>
+				<option value="voice">Voice</option>
+			</select>
 		</div>
 		<div class="rounded-lg border border-neutral-400 bg-neutral-50 px-5 pt-4 pb-2">
 			<div bind:this={plot} bind:clientWidth={plotWidth} class="relative h-56 text-neutral-1100">
@@ -485,7 +476,7 @@
 <style>
 	.eq-band.is-off {
 		color: var(--color-neutral-1000);
-		background-color: var(--color-neutral-200);
+		background-color: color-mix(in srgb, var(--color-neutral-200) 30%, transparent);
 		border-color: var(--color-neutral-600);
 		--tw-ring-color: var(--color-neutral-500);
 	}
