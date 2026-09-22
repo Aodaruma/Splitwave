@@ -286,6 +286,19 @@
 
 	--xy-edge-stroke-default: var(--color-primary) !important;
 	--xy-edge-stroke-width-default: 4 !important;
+
+	--xy-selection-background-color: transparent;
+	--xy-selection-border: 1px dashed var(--color-primary);
+}
+
+/* Custom groups use the node shell, not XYFlow's built-in group surface. */
+.svelte-flow .svelte-flow__node-group {
+	--xy-node-boxshadow-hover: none;
+	--xy-node-boxshadow-selected: none;
+	width: auto;
+	padding: 0;
+	background: transparent;
+	text-align: inherit;
 }
 
 .handle {
