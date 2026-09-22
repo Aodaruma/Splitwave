@@ -10,6 +10,7 @@ import {
 	expand,
 	groupSelection,
 	makeIndependent,
+	replaceGroup,
 	materialize,
 	patchRuntimeNode,
 	runtimeId,
@@ -18,9 +19,18 @@ import {
 	type GroupDocument,
 	type GroupNode
 } from '../src/lib/modules/pipeline/groups';
-import { findGroupInstance, saveToLibrary, type GroupLibrary } from '../src/lib/modules/pipeline/group_library';
+import { findGroupInstance, inheritReplacementStates, saveToLibrary, type GroupLibrary } from '../src/lib/modules/pipeline/group_library';
 import { BOUNDARY_INPUT, BOUNDARY_OUTPUT, groupView, saveGroupView } from '../src/lib/modules/flow/utils/group_view';
-import { boundaryPort, cutGroupWires, editPort, exposePort, NEW_GROUP_PORT, survivingGroupPath } from '../src/lib/modules/flow/utils/group_ports';
+import {
+	addPort,
+	reorderPort,
+	boundaryPort,
+	cutGroupWires,
+	editPort,
+	exposePort,
+	NEW_GROUP_PORT,
+	survivingGroupPath
+} from '../src/lib/modules/flow/utils/group_ports';
 import { assertRewireAcyclic } from '../src/lib/modules/flow/utils/wiring';
 import { groupPathFromPage, groupPathFromUrl, groupUrl } from '../src/lib/modules/flow/utils/group_navigation';
 import { createHistoryRestorer } from '../src/lib/modules/flow/utils/history_restore';
@@ -62,6 +72,128 @@ function deferred<T>() {
 }
 
 describe('reusable node groups', () => {
+	it('initializes replacement plugin state in every shared parent occurrence and pipeline', () => {
+		const plugin = (state: string): PipelineNode => ({ ...node('plug', 'plugin'), data: { path: 'test.vst3', pluginId: 'test', state, bypassed: false } });
+		const source = { ...pipeline('source'), nodes: [plugin('chosen-state')], edges: [] };
+		const sourceDoc = documentFor(source);
+		const sourceId = groupSelection(sourceDoc, [], ['plug']);
+		const chosen = scopeAt(sourceDoc, [sourceId]).id;
+		let library = saveToLibrary(empty(), materialize(source, sourceDoc));
+		const p = { ...pipeline('first'), nodes: [plugin('old-state')], edges: [] };
+		const doc = documentFor(p);
+		const child = groupSelection(doc, [], ['plug']);
+		const parent = groupSelection(doc, [], [child]);
+		definition(doc, doc.root).nodes.push({ ...structuredClone(group(doc, parent)), id: 'linked-parent', identity: undefined });
+		library = saveToLibrary(library, materialize(p, doc));
+		const second = { ...pipeline('second'), nodes: [], edges: [] };
+		const secondDoc = documentFor(second);
+		Object.assign(secondDoc.definitions, library.definitions);
+		definition(secondDoc, secondDoc.root).nodes.push({ ...structuredClone(group(doc, parent)), id: 'other-parent', identity: undefined });
+		library = saveToLibrary(library, materialize(second, secondDoc));
+		const editing = documentFor(library.pipelines.first);
+		Object.assign(editing.definitions, structuredClone(library.definitions));
+		const previous = structuredClone(editing.definitions);
+		replaceGroup(editing, [parent], child, chosen);
+		inheritReplacementStates(library, editing, previous);
+		expect(expand(editing).nodes.map((n) => n.data.state)).toEqual(['chosen-state', 'chosen-state']);
+		const saved = saveToLibrary(library, materialize(library.pipelines.first, editing));
+		expect(saved.pipelines.first.nodes.map((n) => n.data.state)).toEqual(['chosen-state', 'chosen-state']);
+		expect(saved.pipelines.second.nodes.map((n) => n.data.state)).toEqual(['chosen-state']);
+	});
+	it('reserves all stable port IDs before attempting label matches', () => {
+		const doc = documentFor(pipeline());
+		const id = groupSelection(doc, [], ['a']);
+		const old = scopeAt(doc, [id]);
+		const connected = old.inputs[0];
+		connected.label = 'Right';
+		old.inputs.unshift({ id: 'unused', label: 'Left', node: '', disconnected: true });
+		const replacement = copyDefinition(doc, old.id);
+		definition(doc, replacement).inputs = [{ ...connected, label: 'Left' }];
+		replaceGroup(doc, [], id, replacement);
+		expect(definition(doc, doc.root).edges.find((e) => e.id === 'in')?.targetHandle).toBe(connected.id);
+		expect(() => expand(doc)).not.toThrow();
+	});
+	it('adds disconnected sockets that persist without an endpoint and reconnect with their external wires', () => {
+		const p = { ...pipeline(), edges: [] };
+		const doc = documentFor(p);
+		const id = groupSelection(doc, [], ['a']);
+		const inner = scopeAt(doc, [id]);
+		const input = addPort(inner, 'inputs'),
+			output = addPort(inner, 'outputs');
+		const second = addPort(inner, 'inputs');
+		expect(inner.inputs.map((p) => p.label)).toEqual(['Input 1', 'Input 2']);
+		definition(doc, doc.root).edges.push(
+			{ id: 'in', source: 'mic', sourceHandle: 'ch1', target: id, targetHandle: input },
+			{ id: 'out', source: id, sourceHandle: output, target: 'rec', targetHandle: 'ch1' }
+		);
+		const restored = documentFor(JSON.parse(JSON.stringify(materialize(p, doc))));
+		expect(expand(restored).edges).toEqual([]);
+		expect(scopeAt(restored, [id]).inputs[0]).toEqual({ id: input, label: 'Input 1', node: '', disconnected: true });
+		exposePort(scopeAt(restored, [id]), 'inputs', 'a', 'ch1', 'Auto label', input);
+		exposePort(scopeAt(restored, [id]), 'outputs', 'a', 'ch1', 'Auto label', output);
+		expect(expand(restored).edges.map((e) => e.id)).toEqual(['in', 'out']);
+		expect(scopeAt(restored, [id]).inputs.map((p) => p.id)).toEqual([input, second]);
+		expect(scopeAt(restored, [id]).inputs[0].label).toBe('Input 1');
+	});
+	it('moves port rows across the list without changing stable routing or labels', () => {
+		const doc = documentFor(pipeline());
+		const id = groupSelection(doc, [], ['a', 'b']);
+		const d = scopeAt(doc, [id]);
+		const first = d.outputs[0].id,
+			second = d.outputs[1].id,
+			last = addPort(d, 'outputs');
+		const before = routing(expand(doc));
+		reorderPort(d, 'outputs', first, last);
+		expect(d.outputs.map((p) => p.id)).toEqual([second, last, first]);
+		reorderPort(d, 'outputs', first, second);
+		expect(d.outputs.map((p) => p.id)).toEqual([first, second, last]);
+		reorderPort(d, 'outputs', first, 'missing');
+		expect(routing(expand(doc))).toEqual(before);
+	});
+	it('switches group definitions with matching ports and a fresh runtime identity', () => {
+		const doc = documentFor(pipeline());
+		const id = groupSelection(doc, [], ['a', 'b']);
+		const old = scopeAt(doc, [id]);
+		const replacement = copyDefinition(doc, old.id);
+		const next = definition(doc, replacement);
+		next.inputs[0].id = 'new-input';
+		const parent = definition(doc, doc.root);
+		parent.inputs.push({ id: 'parent-in', label: 'Parent', node: id, handle: old.inputs[0].id });
+		const previous = runtimeId(doc, [id], 'a');
+		doc.pluginStates[previous] = { path: 'unrelated', pluginId: 'old', state: 'stale' };
+		replaceGroup(doc, [], id, replacement);
+		expect(group(doc, id).data.definition).toBe(replacement);
+		expect(parent.edges.find((e) => e.id === 'in')?.targetHandle).toBe('new-input');
+		expect(parent.inputs[0].handle).toBe('new-input');
+		expect(runtimeId(doc, [id], 'a')).not.toBe(previous);
+		expect(doc.pluginStates[runtimeId(doc, [id], 'a')]).toBeUndefined();
+		expect(expand(doc).edges).toHaveLength(4);
+	});
+	it('refuses unmatched or ambiguous connected ports without changing the instance or its wiring', () => {
+		const doc = documentFor(pipeline());
+		const id = groupSelection(doc, [], ['a', 'b']);
+		const replacement = copyDefinition(doc, scopeAt(doc, [id]).id);
+		const next = definition(doc, replacement);
+		next.inputs[0].id = 'different';
+		next.inputs[0].label = 'Different';
+		let before = structuredClone(doc);
+		expect(() => replaceGroup(doc, [], id, replacement)).toThrow('Disconnect that wire');
+		expect(doc).toEqual(before);
+		next.inputs[0].label = scopeAt(doc, [id]).inputs[0].label;
+		next.inputs.push({ ...next.inputs[0], id: 'ambiguous' });
+		before = structuredClone(doc);
+		expect(() => replaceGroup(doc, [], id, replacement)).toThrow('Disconnect that wire');
+		expect(doc).toEqual(before);
+	});
+	it('rejects recursive group selection and preserves identity when selecting the current definition', () => {
+		const doc = documentFor(pipeline());
+		const id = groupSelection(doc, [], ['a']);
+		const before = structuredClone(doc);
+		replaceGroup(doc, [], id, scopeAt(doc, [id]).id);
+		expect(doc).toEqual(before);
+		expect(() => replaceGroup(doc, [], id, doc.root)).toThrow('itself or its parent');
+		expect(doc).toEqual(before);
+	});
 	it('new interior sockets become stable external ports and survive linked-instance edits', () => {
 		const p = { ...pipeline(), edges: [] };
 		const doc = documentFor(p);

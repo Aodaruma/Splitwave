@@ -55,6 +55,7 @@
 		groupSelection,
 		ungroup,
 		makeIndependent,
+		replaceGroup,
 		copyDefinition,
 		assertReusableInstance,
 		copyInstanceState,
@@ -68,12 +69,23 @@
 		assertFresh,
 		definitionContent,
 		findGroupInstance,
+		inheritReplacementStates,
 		usageCount,
 		validateSharedRoutes,
 		type GroupLibrary
 	} from '$lib/modules/pipeline/group_library';
 	import { GROUP_ACTIONS, BOUNDARY_INPUT, BOUNDARY_OUTPUT, groupView, saveGroupView } from '../utils/group_view';
-	import { NEW_GROUP_PORT, boundaryPort, exposePort, editPort, cutGroupWires, survivingGroupPath, type PortSide } from '../utils/group_ports';
+	import {
+		NEW_GROUP_PORT,
+		boundaryPort,
+		exposePort,
+		editPort,
+		addPort,
+		reorderPort,
+		cutGroupWires,
+		survivingGroupPath,
+		type PortSide
+	} from '../utils/group_ports';
 	import { groupPathFromPage, groupUrl } from '../utils/group_navigation';
 	const editorNodeTypes = { ...nodeTypes, group: Group, groupBoundary: GroupBoundary };
 	import ChannelEdge from './_channel_edge.svelte';
@@ -196,17 +208,44 @@
 	setContext(GROUP_ACTIONS, {
 		open: openGroup,
 		usage: groupUsage,
+		choices: () => {
+			const doc = { ...groupDocument, definitions: { ...groupLibrary.definitions, ...groupDocument.definitions } };
+			const parent = scopeAt(doc, groupPath).id;
+			return Object.values(doc.definitions)
+				.filter((d) => !dependencies(doc, d.id)[parent])
+				.map((d) => ({ id: d.id, name: d.name }));
+		},
+		refresh: async () => {
+			try {
+				groupLibrary = await pipelineMethods.library();
+			} catch (error) {
+				audioStore.reportError(error);
+			}
+		},
+		select: (id: string, chosen: string) =>
+			documentEdit((doc) => {
+				const available = { ...groupLibrary.definitions, ...doc.definitions };
+				for (const [key, d] of Object.entries(dependencies({ ...doc, definitions: available }, chosen))) doc.definitions[key] ??= structuredClone(d);
+				const source = { ...groupLibrary, pipelines: { ...groupLibrary.pipelines, [pipeline.id]: getSnapshot() } };
+				const previous = structuredClone(doc.definitions);
+				replaceGroup(doc, groupPath, id, chosen);
+				inheritReplacementStates(source, doc, previous);
+			}),
+		independent: (id: string) =>
+			documentEdit((doc) => {
+				makeIndependent(doc, groupPath, id);
+				scopeAt(doc, [...groupPath, id]).name += ' copy';
+			}),
 		rename: (id: string, name: string) =>
 			documentEdit((doc) => {
 				const n = scopeAt(doc, groupPath).nodes.find((n) => n.id === id);
 				if (n?.kind === 'group' && name.trim()) definition(doc, n.data.definition).name = name.trim();
 			}),
-		port: (id: string, side: 'inputs' | 'outputs', port: string, action: string, label?: string) =>
+		addBoundaryPort: (side: PortSide) =>
 			documentEdit((doc) => {
-				const n = scopeAt(doc, groupPath).nodes.find((n) => n.id === id);
-				if (n?.kind !== 'group') return;
-				editPort(definition(doc, n.data.definition), side, port, action, label);
+				addPort(scopeAt(doc, groupPath), side);
 			}),
+		reorderBoundaryPort: (side: PortSide, id: string, target: string) => documentEdit((doc) => reorderPort(scopeAt(doc, groupPath), side, id, target)),
 		boundaryPort: (side: PortSide, port: string, action: string, label?: string) =>
 			documentEdit((doc) => editPort(scopeAt(doc, groupPath), side, port, action, label))
 	});
@@ -1031,7 +1070,7 @@
 			return port ? semantic(inner, port.node, port.handle) : null;
 		}
 		const d = node?.kind === 'group' ? definition(groupDocument, node.data.definition) : null;
-		const ordered = d?.[portSide].map((p) => ({ id: p.id, handle: semantic(d, p.node, p.handle) }));
+		const ordered = d?.[portSide].filter((p) => p.node).map((p) => ({ id: p.id, handle: semantic(d, p.node, p.handle) }));
 		return { id, handles: handles.map((h) => ({ id: h.id ?? null, y: h.y })), channels: channelPorts.get(id)?.[side], ordered };
 	}
 
@@ -1046,11 +1085,14 @@
 		const exposed = d[input ? 'inputs' : 'outputs']
 			.filter((port) => !port.disconnected && port.node === localNodeId(other))
 			.map((port) => port.handle ?? null);
+		const used = new Set<string>();
 		return planGroupPorts(audioPorts(other, input ? 'target' : 'source'), input ? 'target' : 'source', edges, exposed).map((handle) => {
 			const ports = d[input ? 'inputs' : 'outputs'];
 			const reusable =
-				ports.find((p) => p.disconnected && p.node === localNodeId(other) && (p.handle ?? null) === handle) ??
-				ports.find((p) => p.disconnected && (p.handle ?? null) === handle);
+				ports.find((p) => !used.has(p.id) && p.disconnected && p.node === localNodeId(other) && (p.handle ?? null) === handle) ??
+				ports.find((p) => !used.has(p.id) && p.disconnected && p.node && (p.handle ?? null) === handle) ??
+				ports.find((p) => !used.has(p.id) && p.disconnected && !p.node);
+			if (reusable) used.add(reusable.id);
 			const socket = reusable?.id ?? NEW_GROUP_PORT;
 			return input
 				? { source: BOUNDARY_INPUT, sourceHandle: socket, target: other, targetHandle: handle }

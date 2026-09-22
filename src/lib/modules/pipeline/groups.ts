@@ -9,7 +9,7 @@ export interface GroupPort {
 	label: string;
 	node: string;
 	handle?: string;
-	/** Retain the socket and its last endpoint when its interior wire is cut. */
+	/** Retain the socket without an interior wire; node is empty until its first connection. */
 	disconnected?: boolean;
 }
 
@@ -338,6 +338,59 @@ export function makeIndependent(doc: GroupDocument, path: string[], id: string) 
 	const n = scopeAt(doc, path).nodes.find((n) => n.id === id);
 	if (n?.kind !== 'group') throw new Error('Select a group');
 	n.data.definition = copyDefinition(doc, n.data.definition, true);
+}
+
+export function replaceGroup(doc: GroupDocument, path: string[], id: string, chosen: string) {
+	const parent = scopeAt(doc, path);
+	const instance = parent.nodes.find((n) => n.id === id);
+	if (instance?.kind !== 'group') throw new Error('Select a group');
+	if (instance.data.definition === chosen) return;
+	if (dependencies(doc, chosen)[parent.id]) throw new Error('A group cannot contain itself or its parent.');
+	assertReusableInstance(doc, chosen);
+	const old = definition(doc, instance.data.definition);
+	const next = definition(doc, chosen);
+	const maps = { inputs: new Map<string, string>(), outputs: new Map<string, string>() };
+	for (const side of ['inputs', 'outputs'] as const) {
+		const used = new Set<string>();
+		for (const port of old[side])
+			if (next[side].some((p) => p.id === port.id)) {
+				maps[side].set(port.id, port.id);
+				used.add(port.id);
+			}
+		for (const port of old[side]) {
+			if (maps[side].has(port.id)) continue;
+			const labels = next[side].filter((p) => p.label === port.label);
+			const match = labels.length === 1 ? labels[0] : undefined;
+			if (match && !used.has(match.id)) {
+				maps[side].set(port.id, match.id);
+				used.add(match.id);
+			}
+		}
+	}
+	const mapped = (side: 'inputs' | 'outputs', handle?: string) => {
+		const result = handle && maps[side].get(handle);
+		if (!result)
+			throw new Error(
+				`“${next.name}” has no matching ${side === 'inputs' ? 'input' : 'output'} for a connected port. Disconnect that wire before switching groups.`
+			);
+		return result;
+	};
+	// Validate every exterior and parent-interface wire before changing any of them.
+	const edges = parent.edges.map((e) => ({
+		...e,
+		...(e.source === id ? { sourceHandle: mapped('outputs', e.sourceHandle) } : {}),
+		...(e.target === id ? { targetHandle: mapped('inputs', e.targetHandle) } : {})
+	}));
+	const interfaces = (side: 'inputs' | 'outputs') =>
+		parent[side].map((p) => (p.node === id && !p.disconnected ? { ...p, handle: mapped(side, p.handle) } : p));
+	const inputs = interfaces('inputs'),
+		outputs = interfaces('outputs');
+	parent.edges = edges;
+	parent.inputs = inputs;
+	parent.outputs = outputs;
+	instance.data.definition = chosen;
+	// A different definition must not inherit live DSP/plugin state through coincident local IDs.
+	instance.identity = [createId()];
 }
 
 export function copyInstanceState(source: GroupDocument, sourcePath: string[], target: GroupDocument, targetPath: string[]) {

@@ -6,6 +6,23 @@ import { BOUNDARY_INPUT, BOUNDARY_OUTPUT } from './group_view';
 export const NEW_GROUP_PORT = '$new-port';
 export type PortSide = 'inputs' | 'outputs';
 
+export function addPort(d: GroupDefinition, side: PortSide): string {
+	const prefix = side === 'inputs' ? 'Input' : 'Output';
+	let number = 1;
+	while (d[side].some((p) => p.label === `${prefix} ${number}`)) number++;
+	const id = createId();
+	d[side].push({ id, label: `${prefix} ${number}`, node: '', disconnected: true });
+	return id;
+}
+
+export function reorderPort(d: GroupDefinition, side: PortSide, id: string, target: string) {
+	const ports = d[side];
+	const from = ports.findIndex((p) => p.id === id);
+	const to = ports.findIndex((p) => p.id === target);
+	if (from < 0 || to < 0 || from === to) return;
+	ports.splice(to, 0, ports.splice(from, 1)[0]);
+}
+
 export function boundaryPort(connection: Connection | Edge): { side: PortSide; node: string; handle?: string; port?: string } | null {
 	if (connection.source === BOUNDARY_INPUT && connection.sourceHandle && !connection.target.startsWith('$group-'))
 		return {

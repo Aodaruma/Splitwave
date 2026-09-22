@@ -3,6 +3,7 @@ import type { Pipeline } from './types';
 import {
 	assertReusableInstance,
 	capturePluginStates,
+	copyInstanceState,
 	definition,
 	dependencies,
 	documentFor,
@@ -40,6 +41,23 @@ export function definitionContent(d: GroupDefinition): string {
 	return JSON.stringify(content);
 }
 
+/** Replacing a child in a shared parent creates new runtime occurrences in every pipeline. */
+export function inheritReplacementStates(source: GroupLibrary, target: GroupDocument, previous: Record<string, GroupDefinition>) {
+	function visit(d: GroupDefinition, path: string[]) {
+		for (const n of d.nodes) {
+			if (n.kind !== 'group') continue;
+			const old = previous[d.id]?.nodes.find((old) => old.id === n.id);
+			const nextPath = [...path, n.id];
+			if (old?.kind === 'group' && old.data.definition !== n.data.definition && JSON.stringify(old.identity) !== JSON.stringify(n.identity)) {
+				const instance = findGroupInstance(source, n.data.definition);
+				if (instance) copyInstanceState(instance.doc, instance.path, target, nextPath);
+			}
+			visit(definition(target, n.data.definition), nextPath);
+		}
+	}
+	visit(definition(target, target.root), []);
+}
+
 export function assertFresh(p: Pipeline, definitions: Record<string, GroupDefinition>) {
 	if (!p.groups) return;
 	for (const d of Object.values(dependencies(p.groups))) {
@@ -67,7 +85,9 @@ export function saveToLibrary(library: GroupLibrary, pipeline: Pipeline): GroupL
 	for (const [id, saved] of Object.entries(next.pipelines)) {
 		if ((saved.version ?? 0) > PIPELINE_VERSION) continue;
 		const document = documentFor(saved);
+		const previous = document.definitions;
 		document.definitions = next.definitions;
+		inheritReplacementStates(library, document, previous);
 		next.pipelines[id] = materialize({ ...saved, name: definition(document, document.root).name }, document);
 	}
 	validateSharedRoutes(next);
