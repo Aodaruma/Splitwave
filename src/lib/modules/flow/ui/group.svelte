@@ -2,11 +2,11 @@
 	import { getContext } from 'svelte';
 	import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/svelte';
 	import Wrapper from './node.svelte';
+	import { Layers } from '$lib/components/icons';
 	import type { GroupPort } from '$lib/modules/pipeline/groups';
 	import { GROUP_ACTIONS } from '../utils/group_view';
 	let { id, data }: NodeProps = $props();
 	const actions = getContext<{
-		open: (id: string) => void;
 		rename: (id: string, name: string) => void;
 		port: (id: string, side: 'inputs' | 'outputs', port: string, action: string, label?: string) => void;
 		usage: (id: string) => number;
@@ -22,7 +22,7 @@
 	});
 </script>
 
-<Wrapper label="Node group">
+<Wrapper label="Node group" variant="group" icon={Layers}>
 	<div class="flex w-52 flex-col gap-2">
 		<input
 			class="nodrag nopan rounded border border-neutral-400 bg-neutral-100 px-2 py-1 text-xs"
@@ -32,7 +32,6 @@
 		<p class="text-[10px] text-neutral-900">
 			{actions.usage(String(data.definition)) > 1 ? `Shared · ${actions.usage(String(data.definition))} uses. Edits apply to all.` : 'Independent group'}
 		</p>
-		<button class="nodrag nopan rounded border border-neutral-400 px-2 py-1 text-xs" onclick={() => actions.open(id)}>Open group</button>
 		{#each [['inputs', inputs], ['outputs', outputs]] as const as [side, ports]}
 			{#each ports as port (port.id)}
 				<div class="relative flex min-h-6 items-center gap-1 text-[10px]">

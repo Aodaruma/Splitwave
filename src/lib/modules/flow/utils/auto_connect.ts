@@ -63,6 +63,20 @@ function isMainBus(handle: string | null, output = false): boolean {
 	return handle === null || handle === 'main' || (output && handle === 'mixed');
 }
 
+/** Audio sockets suitable for a group interface; spare channel sockets are omitted. */
+export function exposedAudioHandles(ports: AudioPorts, side: 'source' | 'target', edges: Edge[]): (string | null)[] {
+	if (side === 'source') return sourceHandles(ports, edges);
+	if (ports.ordered) return ports.ordered.filter((p) => channelNumber(p.handle) !== null || isMainBus(p.handle)).map((p) => p.id);
+	if (ports.channels) {
+		const occupied = edges.filter((e) => e.target === ports.id).map((e) => e.targetHandle ?? '');
+		return deriveSlots(occupied, false, ports.channels.max, Math.max(1, ports.channels.min)).map((slot) => slot.id);
+	}
+	return [...ports.handles]
+		.sort((a, b) => a.y - b.y)
+		.filter((h) => channelNumber(h.id) !== null || isMainBus(h.id))
+		.map((h) => h.id);
+}
+
 export function planAutoConnect(source: AudioPorts, target: AudioPorts, edges: Edge[]): Connection[] {
 	if (createsCycle(source.id, target.id, edges)) return [];
 	const inputs = [...target.handles].sort((a, b) => a.y - b.y);

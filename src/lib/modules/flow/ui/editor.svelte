@@ -7,15 +7,18 @@
 		useNodesInitialized,
 		useViewportInitialized,
 		type Edge as XyEdge,
-		type Node as XyNode
+		type Node as XyNode,
+		type Connection
 	} from '@xyflow/svelte';
+	import { page } from '$app/state';
+	import { pushState, replaceState } from '$app/navigation';
 	import { createId } from '@paralleldrive/cuid2';
 	import { flushSync, onDestroy, onMount, setContext, untrack } from 'svelte';
 	import { platform } from '@tauri-apps/plugin-os';
 	import { modalManager } from '$lib/modules/overlay/modal';
 	import { copyGraph, offsetOrigin, pasteGraph } from '../utils/clipboard';
 	import { createHistoryRestorer } from '../utils/history_restore';
-	import { planAutoConnect, type AudioPorts } from '../utils/auto_connect';
+	import { planAutoConnect, exposedAudioHandles, type AudioPorts } from '../utils/auto_connect';
 	import { canvasShortcut } from '../utils/shortcuts';
 	import { alignNodes, insertReroute, planBulkBypass, withReroutePoints, type AlignmentAxis } from '../utils/layout';
 	import { applyWireInsertion, planWireInsertion, wireHitsBounds } from '../utils/insertion';
@@ -69,7 +72,9 @@
 		validateSharedRoutes,
 		type GroupLibrary
 	} from '$lib/modules/pipeline/group_library';
-	import { GROUP_ACTIONS, groupView, saveGroupView } from '../utils/group_view';
+	import { GROUP_ACTIONS, BOUNDARY_INPUT, BOUNDARY_OUTPUT, groupView, saveGroupView } from '../utils/group_view';
+	import { NEW_GROUP_PORT, boundaryPort, exposePort, editPort, survivingGroupPath, type PortSide } from '../utils/group_ports';
+	import { groupPathFromPage, groupUrl } from '../utils/group_navigation';
 	const editorNodeTypes = { ...nodeTypes, group: Group, groupBoundary: GroupBoundary };
 	import ChannelEdge from './_channel_edge.svelte';
 	import ConnectionLine from './_connection_line.svelte';
@@ -137,25 +142,50 @@
 			audioStore.reportError(error);
 		}
 	}
-	function navigate(path: string[]) {
+	function navigate(path: string[], fromHistory = false) {
 		cancelGestures();
 		try {
+			flushPendingCommit();
 			groupDocument = documentFor(getSnapshot());
-			scopeAt(groupDocument, path);
-			groupPath = path;
+			const previous = groupPath;
+			groupPath = survivingGroupPath(groupDocument, path);
 			showScope();
+			if (groupPath.length < previous.length && groupPath.every((id, i) => id === previous[i]))
+				nodes = nodes.map((n) => ({ ...n, selected: n.id === previous[groupPath.length] }));
 			closeContextMenu();
 			fitRequested = true;
+			editorElement?.focus({ preventScroll: true });
+			const url = groupUrl(page.url, groupPath);
+			const state = { ...page.state, editorGroupPath: groupPath };
+			if (!fromHistory) pushState(url, state);
+			else if (groupPath.length !== path.length) replaceState(url, state);
 		} catch (error) {
 			audioStore.reportError(error);
 		}
 	}
+	$effect(() => {
+		const state = page.state;
+		const path = groupPathFromPage(page.url, state);
+		const url = page.url.href;
+		queueMicrotask(() => {
+			if (!destroying && page.url.href === url && page.state === state && JSON.stringify(path) !== JSON.stringify(groupPath)) navigate(path, true);
+		});
+	});
 	function openGroup(id: string) {
 		navigate([...groupPath, id]);
 	}
 	function collapseSelection() {
 		const ids = nodes.filter((n) => n.selected && n.type !== 'groupBoundary').map((n) => localNodeId(n.id));
-		if (ids.length) documentEdit((doc) => groupSelection(doc, groupPath, ids));
+		if (ids.length) {
+			let id: string | undefined;
+			documentEdit((doc) => {
+				id = groupSelection(doc, groupPath, ids);
+			});
+			if (id) {
+				nodes = nodes.map((n) => ({ ...n, selected: n.id === id }));
+				editorElement.focus({ preventScroll: true });
+			}
+		}
 	}
 	function groupUsage(id: string) {
 		const p = getSnapshot();
@@ -173,16 +203,10 @@
 			documentEdit((doc) => {
 				const n = scopeAt(doc, groupPath).nodes.find((n) => n.id === id);
 				if (n?.kind !== 'group') return;
-				const ports = definition(doc, n.data.definition)[side];
-				const index = ports.findIndex((p) => p.id === port);
-				if (index < 0) return;
-				if (action === 'label') ports[index].label = label?.trim() || 'Audio';
-				else if (action === 'remove') ports.splice(index, 1);
-				else {
-					const to = index + (action === 'up' ? -1 : 1);
-					if (to >= 0 && to < ports.length) [ports[index], ports[to]] = [ports[to], ports[index]];
-				}
-			})
+				editPort(definition(doc, n.data.definition), side, port, action, label);
+			}),
+		boundaryPort: (side: PortSide, port: string, action: string, label?: string) =>
+			documentEdit((doc) => editPort(scopeAt(doc, groupPath), side, port, action, label))
 	});
 	async function openChooser() {
 		try {
@@ -470,7 +494,18 @@
 
 	const INTERACTIVE =
 		'input, textarea, select, button, a, [contenteditable]:not([contenteditable="false"]), [role="dialog"], [role="button"]:not(.svelte-flow__node):not(.svelte-flow__selection-wrapper), [role="slider"], [role="combobox"], .nodrag, .nopan:not(.svelte-flow__node), .svelte-flow__handle, .svelte-flow__resize-control';
-	let connectDrag = $state<{ source: string; pointerId: number; startX: number; startY: number; x: number; y: number } | null>(null);
+	type ConnectFrame = { x: number; y: number; width: number; height: number };
+	let connectDrag = $state.raw<{
+		source: string;
+		target?: string;
+		pointerId: number;
+		startX: number;
+		startY: number;
+		x: number;
+		y: number;
+		frames: ConnectFrame[];
+		sockets: Point[];
+	} | null>(null);
 	let connectNotice = $state('');
 	let cutDrag = $state.raw<{ pointerId: number; points: Point[]; hits: Set<string> } | null>(null);
 	let pointMotion = $state.raw<{ pointerId: number; edgeId: string; index: number; points: Point[]; start: Point; origin: Point } | null>(null);
@@ -871,6 +906,35 @@
 		const node = target.closest<HTMLElement>('.svelte-flow__node');
 		return node && editorElement.contains(node) ? node : null;
 	}
+	function nodeAt(x: number, y: number): HTMLElement | undefined {
+		return document
+			.elementsFromPoint(x, y)
+			.map((el) => el.closest<HTMLElement>('.svelte-flow__node'))
+			.find((el): el is HTMLElement => !!el && editorElement.contains(el));
+	}
+	function connectDecoration(source: string, target?: string) {
+		const rect = editorElement.getBoundingClientRect();
+		const elements = [...editorElement.querySelectorAll<HTMLElement>('.svelte-flow__node')];
+		const frames = [source, target].flatMap((id) => {
+			const r = elements.find((el) => el.dataset.id === id)?.getBoundingClientRect();
+			return r ? [{ x: r.left - rect.left - 3, y: r.top - rect.top - 3, width: r.width + 6, height: r.height + 6 }] : [];
+		});
+		const sockets: Point[] = [];
+		for (const connection of target ? quickConnections(source, target) : []) {
+			for (const side of ['source', 'target'] as const) {
+				const handle = connection[side === 'source' ? 'sourceHandle' : 'targetHandle'];
+				const el = elements.find((el) => el.dataset.id === connection[side]);
+				const socket = [...(el?.querySelectorAll<HTMLElement>(`.svelte-flow__handle.${side}`) ?? [])].find(
+					(el) => (el.dataset.handleid ?? null) === handle
+				);
+				if (socket) {
+					const r = socket.getBoundingClientRect();
+					sockets.push({ x: r.left + r.width / 2 - rect.left, y: r.top + r.height / 2 - rect.top });
+				}
+			}
+		}
+		return { frames, sockets };
+	}
 
 	function onEditorPointerDown(event: PointerEvent) {
 		const target = event.target;
@@ -888,9 +952,10 @@
 			return;
 		}
 		if (event.button === 0) editorElement.focus({ preventScroll: true });
-		const node = bodyNode(target);
-		if (!node?.dataset.id || nodes.find((n) => n.id === node.dataset.id)?.type === 'groupBoundary') return;
+		const node = bodyNode(target) ?? (event.button === 2 && event.altKey ? nodeAt(event.clientX, event.clientY) : undefined);
+		if (!node?.dataset.id) return;
 		if (event.button === 0) {
+			if (nodes.find((n) => n.id === node.dataset.id)?.type === 'groupBoundary') return;
 			dragCandidate = {
 				pointerId: event.pointerId,
 				shake: shakeDetector({ x: event.clientX, y: event.clientY }, event.timeStamp),
@@ -906,14 +971,17 @@
 		suppressRightMenu = true;
 		connectNotice = '';
 		const rect = editorElement.getBoundingClientRect();
-		connectDrag = {
-			source: node.dataset.id,
-			pointerId: event.pointerId,
-			startX: event.clientX - rect.left,
-			startY: event.clientY - rect.top,
-			x: event.clientX - rect.left,
-			y: event.clientY - rect.top
-		};
+		flushSync(() => {
+			connectDrag = {
+				source: node.dataset.id!,
+				pointerId: event.pointerId,
+				startX: event.clientX - rect.left,
+				startY: event.clientY - rect.top,
+				x: event.clientX - rect.left,
+				y: event.clientY - rect.top,
+				...connectDecoration(node.dataset.id!)
+			};
+		});
 		editorElement.setPointerCapture(event.pointerId);
 	}
 
@@ -924,7 +992,15 @@
 			return;
 		}
 		const rect = editorElement.getBoundingClientRect();
-		connectDrag = { ...connectDrag, x: event.clientX - rect.left, y: event.clientY - rect.top };
+		const hovered = nodeAt(event.clientX, event.clientY)?.dataset.id;
+		const target = hovered === connectDrag.source ? undefined : hovered;
+		connectDrag = {
+			...connectDrag,
+			target,
+			x: event.clientX - rect.left,
+			y: event.clientY - rect.top,
+			...(target !== connectDrag.target ? connectDecoration(connectDrag.source, target) : {})
+		};
 	}
 
 	function cancelConnect() {
@@ -950,16 +1026,59 @@
 		return { id, handles: handles.map((h) => ({ id: h.id ?? null, y: h.y })), channels: channelPorts.get(id)?.[side], ordered };
 	}
 
+	function quickConnections(source: string, target: string): Connection[] {
+		if (source === target) return [];
+		const boundary = [source, target].filter((id) => id === BOUNDARY_INPUT || id === BOUNDARY_OUTPUT);
+		if (!boundary.length) return planAutoConnect(audioPorts(source, 'source'), audioPorts(target, 'target'), edges);
+		if (boundary.length !== 1 || !groupPath.length) return [];
+		const input = boundary[0] === BOUNDARY_INPUT;
+		const other = source === boundary[0] ? target : source;
+		const d = scopeAt(groupDocument, groupPath);
+		return exposedAudioHandles(audioPorts(other, input ? 'target' : 'source'), input ? 'target' : 'source', edges)
+			.filter((handle) => !d[input ? 'inputs' : 'outputs'].some((port) => port.node === localNodeId(other) && (port.handle ?? null) === handle))
+			.map((handle) =>
+				input
+					? { source: BOUNDARY_INPUT, sourceHandle: NEW_GROUP_PORT, target: other, targetHandle: handle }
+					: { source: other, sourceHandle: handle, target: BOUNDARY_OUTPUT, targetHandle: NEW_GROUP_PORT }
+			);
+	}
+	function exposeConnections(connections: Connection[]) {
+		if (!groupPath.length) return;
+		documentEdit((doc) => {
+			const d = scopeAt(doc, groupPath);
+			for (const connection of connections) {
+				const port = boundaryPort(connection);
+				if (!port) continue;
+				const node = nodes.find((n) => n.id === port.node);
+				const audio = audioPorts(port.node, port.side === 'inputs' ? 'target' : 'source');
+				const handle = audio.ordered?.find((p) => p.id === port.handle)?.handle ?? port.handle;
+				const label = String(node?.data.name ?? registry[node?.type as NodeKind]?.label ?? 'Audio');
+				exposePort(d, port.side, localNodeId(port.node), port.handle, `${label} · ${handle ?? 'Audio'}`);
+			}
+		});
+	}
+	function onSocketConnect(connection: Connection) {
+		if (!boundaryPort(connection)) return;
+		// XYFlow adds the temporary edge before calling onconnect; only the stable port is saved.
+		edges = edges.filter((e) => !boundaryPort(e as Connection));
+		seenEdgeIds = new Set(edges.map((e) => e.id));
+		exposeConnections([connection]);
+	}
 	function onConnectEnd(event: PointerEvent) {
 		if (!connectDrag || connectDrag.pointerId !== event.pointerId || event.button !== 2) return;
 		const source = connectDrag.source;
-		const moved = Math.hypot(connectDrag.x - connectDrag.startX, connectDrag.y - connectDrag.startY) >= 3;
-		const target = bodyNode(document.elementFromPoint(event.clientX, event.clientY))?.dataset.id;
+		const rect = editorElement.getBoundingClientRect();
+		const moved = Math.hypot(event.clientX - rect.left - connectDrag.startX, event.clientY - rect.top - connectDrag.startY) >= 3;
+		const target = nodeAt(event.clientX, event.clientY)?.dataset.id;
 		cancelConnect();
 		if (!moved || !target) return;
-		const planned = planAutoConnect(audioPorts(source, 'source'), audioPorts(target, 'target'), edges);
+		const planned = quickConnections(source, target);
 		if (!planned.length) {
 			connectNotice = 'No new compatible audio connections (already connected, unavailable channels, or a cycle).';
+			return;
+		}
+		if (planned.some((connection) => boundaryPort(connection))) {
+			exposeConnections(planned);
 			return;
 		}
 		editGraph(() => {
@@ -1231,11 +1350,8 @@
 			)
 				return false;
 			groupDocument = documentFor(capturePluginStates(p));
-			try {
-				scopeAt(groupDocument, groupPath);
-			} catch {
-				groupPath = [];
-			}
+			groupPath = survivingGroupPath(groupDocument, groupPath);
+			replaceState(groupUrl(page.url, groupPath), { ...page.state, editorGroupPath: groupPath });
 			showScope();
 			return true;
 		} catch (error) {
@@ -1479,11 +1595,14 @@
 				collapseSelection();
 				return;
 			}
-			if (e.key === 'Enter') {
-				const n = nodes.find((n) => n.selected && n.type === 'group');
-				if (n) {
+			if ((e.key === 'Enter' || e.key === 'Tab') && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+				const selected = nodes.filter((n) => n.selected && n.type !== 'groupBoundary');
+				const n = selected.length === 1 && selected[0].type === 'group' ? selected[0] : undefined;
+				if (n || (e.key === 'Tab' && groupPath.length)) {
 					e.preventDefault();
-					openGroup(n.id);
+					e.stopImmediatePropagation();
+					if (n) openGroup(n.id);
+					else navigate(groupPath.slice(0, -1));
 					return;
 				}
 			}
@@ -1545,6 +1664,8 @@
 
 	onMount(() => {
 		window.addEventListener('keydown', onWindowKeyDown, { capture: true });
+		window.addEventListener('pointermove', onGestureMove, { capture: true });
+		window.addEventListener('pointerup', onGestureEnd, { capture: true });
 		window.addEventListener('beforeunload', onBeforeUnload);
 		void pipelineMethods
 			.library()
@@ -1552,6 +1673,8 @@
 			.catch((error) => audioStore.reportError(error));
 		return () => {
 			window.removeEventListener('keydown', onWindowKeyDown, { capture: true });
+			window.removeEventListener('pointermove', onGestureMove, { capture: true });
+			window.removeEventListener('pointerup', onGestureEnd, { capture: true });
 			window.removeEventListener('beforeunload', onBeforeUnload);
 		};
 	});
@@ -1570,8 +1693,6 @@
 
 <svelte:window
 	onmousedown={closeContextMenu}
-	onpointermove={onGestureMove}
-	onpointerup={onGestureEnd}
 	onpointercancel={onGestureCancel}
 	onblur={() => {
 		deletingCablePoint = false;
@@ -1599,10 +1720,11 @@
 				e.stopPropagation();
 			}
 		}}
-		ondblclick={(event) => {
+		ondblclickcapture={(event) => {
 			const id = bodyNode(event.target)?.dataset.id;
 			if (id && nodes.some((n) => n.id === id && n.type === 'group')) {
 				event.preventDefault();
+				event.stopPropagation();
 				openGroup(id);
 			}
 		}}
@@ -1614,6 +1736,8 @@
 			bind:nodes
 			bind:edges
 			nodeTypes={editorNodeTypes}
+			onconnect={onSocketConnect}
+			isValidConnection={(connection) => ![connection.source, connection.target].some((id) => id.startsWith('$group-')) || !!boundaryPort(connection)}
 			onbeforedelete={async ({ nodes: deleted, edges: deletedEdges }) => {
 				const d = scopeAt(groupDocument, groupPath);
 				if (deleted.some((n) => [...d.inputs, ...d.outputs].some((p) => p.node === localNodeId(n.id)))) {
@@ -1684,15 +1808,23 @@
 			</div>
 		{/if}
 		{#if connectDrag}
-			<svg class="pointer-events-none absolute inset-0 z-20 h-full w-full" aria-hidden="true">
+			<svg class="quick-connect-preview pointer-events-none absolute inset-0 z-20 h-full w-full text-red-600 dark:text-red-400" aria-hidden="true">
+				{#each connectDrag.frames as frame}
+					<rect x={frame.x} y={frame.y} width={frame.width} height={frame.height} rx="9" fill="none" stroke="currentColor" stroke-width="2.5" />
+				{/each}
 				<line
 					x1={connectDrag.startX}
 					y1={connectDrag.startY}
 					x2={connectDrag.x}
 					y2={connectDrag.y}
 					stroke="currentColor"
-					stroke-width="2"
-					stroke-dasharray="5 4" />
+					stroke-width="2.5"
+					stroke-linecap="round" />
+				<circle cx={connectDrag.startX} cy={connectDrag.startY} r="5" fill="currentColor" />
+				<circle cx={connectDrag.x} cy={connectDrag.y} r="5" fill="currentColor" />
+				{#each connectDrag.sockets as socket}
+					<circle cx={socket.x} cy={socket.y} r="6" fill="none" stroke="currentColor" stroke-width="2" />
+				{/each}
 			</svg>
 		{/if}
 		{#if cutDrag}

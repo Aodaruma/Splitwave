@@ -20,6 +20,7 @@
 	interface Props {
 		label: string;
 		accent?: NodeCategory;
+		variant?: 'default' | 'group';
 		icon?: Component<{ class?: ClassValue; title?: string }>;
 		badge?: Snippet;
 		srcTooltip?: string;
@@ -44,6 +45,7 @@
 	let {
 		label,
 		accent = 'effect',
+		variant = 'default',
 		icon: NodeIcon,
 		badge,
 		srcTooltip,
@@ -78,11 +80,12 @@
 	}
 </script>
 
-<div class={['node-shell min-w-32 rounded-xl border border-neutral-400 bg-neutral-200 p-4 shadow-sm', !wide && 'max-w-80']}>
-	<div class="mb-2 flex items-center justify-between gap-2">
+<div
+	class={['node-shell min-w-32 rounded-xl border border-neutral-400 bg-neutral-200 p-4 shadow-sm', !wide && 'max-w-80', variant === 'group' && 'node-group']}>
+	<div class="mb-2 flex items-center justify-between gap-2" title={variant === 'group' ? 'Double-click or press Tab to enter group' : undefined}>
 		<span class="flex items-center gap-1.5 text-[10px] font-semibold tracking-wider text-neutral-900 uppercase">
 			{#if NodeIcon}
-				<NodeIcon class={['size-3 shrink-0', CATEGORY_TEXT[accent]]} />
+				<NodeIcon class={['size-3 shrink-0', variant === 'group' ? 'text-primary' : CATEGORY_TEXT[accent]]} />
 			{/if}
 			{label}
 			{#if srcTooltip}
@@ -159,6 +162,17 @@
 <style>
 	/* XYFlow marks selection on the node wrapper it owns, one level above us. */
 	:global(.svelte-flow__node.selected) .node-shell {
-		border-color: var(--color-neutral-700);
+		border-color: var(--color-primary);
+		outline: 2px solid var(--color-primary);
+	}
+
+	.node-group {
+		/* Shadows keep the stacked cards outside measurement and hit testing. */
+		box-shadow:
+			inset 0 2px 0 var(--color-primary),
+			4px -4px 0 -1px var(--color-neutral-200),
+			4px -4px 0 0 var(--color-neutral-500),
+			8px -8px 0 -1px var(--color-neutral-100),
+			8px -8px 0 0 var(--color-neutral-400);
 	}
 </style>

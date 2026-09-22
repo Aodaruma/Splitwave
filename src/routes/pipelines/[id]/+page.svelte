@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { pushState } from '$app/navigation';
+	import { groupPathFromPage, groupUrl } from '$lib/modules/flow/utils/group_navigation';
 	import type { Pipeline } from '$lib/modules/pipeline/types';
 	import { methods as pipelineMethods } from '$lib/modules/pipeline/methods';
 	import { pipelineStore } from '$lib/modules/pipeline/stores.svelte';
@@ -15,6 +17,8 @@
 	let notFound = $state(false);
 	let stale = $state(false);
 	let loadError = $state('');
+	let groupPath = $derived(groupPathFromPage(page.url, page.state));
+	let backUrl = $derived(groupPath.length ? groupUrl(page.url, groupPath.slice(0, -1)).href : '/');
 
 	$effect(() => {
 		const id = page.params.id;
@@ -76,7 +80,17 @@
 <Header>
 	{#snippet left()}
 		<div class="flex min-w-36 items-center gap-2">
-			<a href="/" class="button-header" aria-label="Back to pipelines" title="Back to pipelines"><ArrowLeft class="size-4 shrink-0" /> Back</a>
+			<a
+				href={backUrl}
+				class="button-header"
+				aria-label={groupPath.length ? 'Back to parent group' : 'Back to pipelines'}
+				title={groupPath.length ? 'Back to parent group' : 'Back to pipelines'}
+				onclick={(event) => {
+					if (groupPath.length && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && event.button === 0) {
+						event.preventDefault();
+						pushState(backUrl, { ...page.state, editorGroupPath: groupPath.slice(0, -1) });
+					}
+				}}><ArrowLeft class="size-4 shrink-0" /> Back</a>
 			{#if pipeline}
 				<div class="relative max-w-64 min-w-0 overflow-hidden">
 					<span

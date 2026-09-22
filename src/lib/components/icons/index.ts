@@ -17,6 +17,7 @@ export { default as Folder } from './folder.svelte';
 export { default as FolderOpen } from './folder_open.svelte';
 export { default as History } from './history.svelte';
 export { default as Grid } from './grid.svelte';
+export { default as Layers } from './layers.svelte';
 export { default as KeyCommand } from './key_command.svelte';
 export { default as Loop } from './loop.svelte';
 export { default as Pause } from './pause.svelte';

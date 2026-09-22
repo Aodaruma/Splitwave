@@ -19,11 +19,13 @@ import {
 	type GroupNode
 } from '../src/lib/modules/pipeline/groups';
 import { findGroupInstance, saveToLibrary, type GroupLibrary } from '../src/lib/modules/pipeline/group_library';
-import { groupView, saveGroupView } from '../src/lib/modules/flow/utils/group_view';
+import { BOUNDARY_INPUT, BOUNDARY_OUTPUT, groupView, saveGroupView } from '../src/lib/modules/flow/utils/group_view';
+import { boundaryPort, editPort, exposePort, NEW_GROUP_PORT, survivingGroupPath } from '../src/lib/modules/flow/utils/group_ports';
+import { groupPathFromPage, groupPathFromUrl, groupUrl } from '../src/lib/modules/flow/utils/group_navigation';
 import { createHistoryRestorer } from '../src/lib/modules/flow/utils/history_restore';
 import { withDefaults } from '../src/lib/modules/pipeline/defaults';
 import { migrate, isFromFuture } from '../src/lib/modules/pipeline/migrations';
-import { planAutoConnect } from '../src/lib/modules/flow/utils/auto_connect';
+import { exposedAudioHandles, planAutoConnect } from '../src/lib/modules/flow/utils/auto_connect';
 import { copyGraph, pasteGraph } from '../src/lib/modules/flow/utils/clipboard';
 
 const node = (id: string, kind: PipelineNode['kind'] = 'gain'): PipelineNode => ({
@@ -59,6 +61,100 @@ function deferred<T>() {
 }
 
 describe('reusable node groups', () => {
+	it('new interior sockets become stable external ports and survive linked-instance edits', () => {
+		const p = { ...pipeline(), edges: [] };
+		const doc = documentFor(p);
+		const id = groupSelection(doc, [], ['a']);
+		const original = group(doc, id);
+		definition(doc, doc.root).nodes.push({ ...structuredClone(original), id: 'linked', identity: undefined });
+		const d = scopeAt(doc, ['linked']);
+		expect(exposePort(d, 'inputs', 'a', 'ch1', 'Left')).toBe(true);
+		expect(exposePort(d, 'inputs', 'a', 'ch2', 'Right')).toBe(true);
+		expect(exposePort(d, 'outputs', 'a', 'ch1', 'Output')).toBe(true);
+		expect(exposePort(d, 'inputs', 'a', 'ch1', 'Duplicate')).toBe(false);
+		expect(() => exposePort(d, 'inputs', 'missing', 'ch1', 'Bad')).toThrow('interior node');
+		const input = d.inputs[0].id;
+		const output = d.outputs[0].id;
+		definition(doc, doc.root).edges.push(
+			{ id: 'in', source: 'mic', sourceHandle: 'ch2', target: 'linked', targetHandle: input },
+			{ id: 'out', source: 'linked', sourceHandle: output, target: 'rec', targetHandle: 'ch1' }
+		);
+		const before = routing(expand(doc));
+		const runtime = runtimeId(doc, ['linked'], 'a');
+		expect(runtime).not.toBe('a');
+		expect(before.edges.find((e) => e.id === 'in')?.target).toBe(runtime);
+		editPort(d, 'inputs', input, 'label', 'Voice L');
+		editPort(d, 'inputs', input, 'down');
+		const view = groupView(doc, ['linked']);
+		expect(view.edges.find((e) => e.sourceHandle === input)?.target).toBe(runtime);
+		saveGroupView(doc, ['linked'], view.nodes, view.edges);
+		expect(routing(expand(doc))).toEqual(before);
+		const saved = materialize(p, doc);
+		expect(routing(expand(documentFor(JSON.parse(JSON.stringify(saved)))))).toEqual(before);
+		editPort(d, 'inputs', input, 'remove');
+		expect(() => expand(doc)).toThrow('Missing input port');
+	});
+	it('accepts only new boundary sockets and keeps them out of the audio graph', () => {
+		const input = { source: BOUNDARY_INPUT, sourceHandle: NEW_GROUP_PORT, target: 'a', targetHandle: 'ch1' };
+		const output = { source: 'a', sourceHandle: 'ch1', target: BOUNDARY_OUTPUT, targetHandle: NEW_GROUP_PORT };
+		expect(boundaryPort(input)).toEqual({ side: 'inputs', node: 'a', handle: 'ch1' });
+		expect(boundaryPort(output)).toEqual({ side: 'outputs', node: 'a', handle: 'ch1' });
+		expect(boundaryPort({ ...input, sourceHandle: 'existing' })).toBeNull();
+		expect(boundaryPort({ ...input, target: BOUNDARY_OUTPUT, targetHandle: NEW_GROUP_PORT })).toBeNull();
+		const doc = documentFor(pipeline());
+		const id = groupSelection(doc, [], ['a']);
+		const view = groupView(doc, [id]);
+		const before = routing(expand(doc));
+		saveGroupView(doc, [id], view.nodes, [...view.edges, { ...input, id: 'temporary' }]);
+		expect(routing(expand(doc))).toEqual(before);
+	});
+	it('exposes meaningful stereo ports without sidechains or spare channel sockets', () => {
+		const handles = [
+			{ id: 'ch1', y: 0 },
+			{ id: 'ch2', y: 10 },
+			{ id: 'ch3', y: 20 }
+		];
+		const ports = { id: 'a', handles, channels: { max: 8, min: 0, selfGrowing: false } };
+		const edges = [1, 2].map((ch) => ({ id: String(ch), source: 'mic', target: 'a', targetHandle: `ch${ch}` }));
+		expect(exposedAudioHandles(ports, 'source', edges)).toEqual(['ch1', 'ch2']);
+		expect(exposedAudioHandles(ports, 'target', edges)).toEqual(['ch1', 'ch2']);
+		expect(exposedAudioHandles(ports, 'target', [])).toEqual(['ch1']);
+		expect(
+			exposedAudioHandles(
+				{
+					id: 'group',
+					handles: [],
+					ordered: [
+						{ id: 'left', handle: 'L' },
+						{ id: 'sidechain', handle: 'sidechain' },
+						{ id: 'right', handle: 'R' }
+					]
+				},
+				'target',
+				[]
+			)
+		).toEqual(['left', 'right']);
+	});
+	it('retains nested navigation URLs and falls back after Undo removes a group', () => {
+		const doc = documentFor(pipeline());
+		const outer = groupSelection(doc, [], ['a', 'b']);
+		const inner = groupSelection(doc, [outer], ['a']);
+		const url = new URL('http://localhost/pipelines/p?view=editor#canvas');
+		const nested = groupUrl(url, [outer, inner]);
+		// SvelteKit shallow navigation keeps the loaded URL and changes page.state.
+		expect(groupPathFromPage(url, { editorGroupPath: [outer, inner] })).toEqual([outer, inner]);
+		expect(groupPathFromPage(nested, { editorGroupPath: [] })).toEqual([]);
+		expect(groupPathFromPage(nested, {})).toEqual([outer, inner]);
+		expect(groupPathFromUrl(nested)).toEqual([outer, inner]);
+		expect(nested.searchParams.get('view')).toBe('editor');
+		expect(nested.hash).toBe('#canvas');
+		expect(survivingGroupPath(doc, groupPathFromUrl(nested))).toEqual([outer, inner]);
+		ungroup(doc, [outer], inner);
+		expect(survivingGroupPath(doc, groupPathFromUrl(nested))).toEqual([outer]);
+		ungroup(doc, [], outer);
+		expect(survivingGroupPath(doc, groupPathFromUrl(nested))).toEqual([]);
+		expect(groupUrl(nested, []).href).toBe(url.href);
+	});
 	it('group and ungroup preserve IDs, fan-out, sidechain handles and wiring', () => {
 		const doc = documentFor(pipeline());
 		const before = routing(expand(doc));
