@@ -144,7 +144,7 @@ describe('wire insertion planning', () => {
 				)
 			).toBeNull();
 		expect(planWireInsertion({ ...effect, type: 'plugin' }, 'effect', ports('effect'), ports('effect'), nodes, [edge('L')], ['L'])).toBeNull();
-		expect(planWireInsertion(effect, 'monitor', ports('effect'), ports('effect'), nodes, [edge('L')], ['L'])).toBeNull();
+		expect(planWireInsertion(effect, 'monitor', ports('effect'), ports('effect'), nodes, [edge('L')], ['L'])).not.toBeNull();
 		expect(planWireInsertion(effect, 'effect', ports('effect', 2), ports('effect', 1), nodes, [edge('L')], ['L'])).toBeNull();
 		expect(
 			planWireInsertion(effect, 'effect', { ...ports('effect'), handles: [{ id: 'sidechain', y: 10 }] }, ports('effect'), nodes, [edge('L')], ['L'])

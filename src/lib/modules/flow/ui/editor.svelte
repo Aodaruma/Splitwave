@@ -21,7 +21,7 @@
 	import { planAutoConnect, planGroupPorts, createsCycle, type AudioPorts } from '../utils/auto_connect';
 	import { canvasShortcut } from '../utils/shortcuts';
 	import { alignNodes, insertReroute, planBulkBypass, withReroutePoints, type AlignmentAxis } from '../utils/layout';
-	import { applyWireInsertion, planWireInsertion, wireHitsBounds } from '../utils/insertion';
+	import { insertionHandles, saveWireInsertion, planWireInsertion, wireHitsBounds } from '../utils/insertion';
 	import { EDGE_ACTIONS, type EdgeActions } from '../utils/edge_actions';
 	import {
 		assertRewireAcyclic,
@@ -363,9 +363,47 @@
 	function onDrop(event: DragEvent) {
 		event.preventDefault();
 		const kind = event.dataTransfer?.getData(DND_MIME) as NodeKind | undefined;
-		if (!kind || !(kind in registry)) return;
-		const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
-		addNode(kind, position);
+		if (!kind || !(kind in registry) || modalManager.isOpen || chooserOpen) return;
+		const point = { x: event.clientX, y: event.clientY };
+		const paths = wirePaths(false, true);
+		const hits = paths.filter((w) => wireHitsBounds(w.points, { x: point.x - 12, y: point.y - 12, width: 24, height: 24 })).map((w) => w.id);
+		flushPendingCommit();
+		const previousNodes = nodes,
+			previousEdges = edges,
+			doc = structuredClone(groupDocument);
+		try {
+			const before = getSnapshot();
+			captureIfChanged(before);
+			let id = '';
+			// Mount first so insertion uses the node's real channel capacity, not a guessed registry default.
+			flushSync(() => {
+				id = addNodeWithData(kind, defaultDataFor(kind), flow.screenToFlowPosition(point));
+			});
+			const node = nodes.find((n) => n.id === id)!;
+			const rect = editorElement.querySelector<HTMLElement>(`.svelte-flow__node[data-id="${id}"]`)?.getBoundingClientRect();
+			if (rect)
+				nodes = nodes.map((n) =>
+					n.id === id ? { ...n, position: flow.screenToFlowPosition({ x: point.x - rect.width / 2, y: point.y - rect.height / 2 }) } : n
+				);
+			const plan = insertionPlan(node, hits, paths);
+			flushSync(() => {
+				if (plan) insertIntoWires(id, plan);
+			});
+			const after = getSnapshot();
+			if (plan) validateInsertion(before, after);
+			commit(after);
+		} catch (error) {
+			flushSync(() => {
+				nodes = previousNodes;
+				edges = previousEdges;
+				groupDocument = doc;
+			});
+			audioStore.reportError(error);
+		} finally {
+			clearTimeout(saveTimer);
+			saveTimer = undefined;
+			wireGeometry.clear();
+		}
 	}
 
 	function addNode(kind: NodeKind, position?: { x: number; y: number }) {
@@ -375,16 +413,18 @@
 	function addNodeWithData(kind: NodeKind, data: Record<string, unknown>, position?: { x: number; y: number }) {
 		const fallback = { x: 100 + nodes.length * 40, y: 100 + nodes.length * 40 };
 		const size = registry[kind].defaultSize;
+		const id = createId();
 		nodes = [
 			...nodes,
 			{
-				id: createId(),
+				id,
 				type: kind,
 				position: position ?? fallback,
 				data,
 				...(size ?? {})
 			}
 		];
+		return id;
 	}
 
 	function deleteNode(nodeId: string) {
@@ -689,26 +729,60 @@
 		const motion = nodeMotion;
 		if (!motion || motion.cancelled || motion.detach || motion.moved.length !== 1) return;
 		const node = nodes.find((n) => n.id === motion.moved[0].id);
-		if (!node) return;
+		if (
+			!node ||
+			!['effect', 'monitor'].includes(registry[node.type as NodeKind]?.category) ||
+			edges.some((e) => e.source === node.id || e.target === node.id)
+		) {
+			connectNotice = '';
+			return;
+		}
 		const internal = flow.getInternalNode(node.id);
 		const size = internal?.measured;
 		if (!size?.width || !size.height) return;
 		const position = internal!.internals.positionAbsolute;
 		const a = flow.flowToScreenPosition(position);
 		const b = flow.flowToScreenPosition({ x: position.x + size.width, y: position.y + size.height });
-		const paths = wirePaths(false);
+		const paths = wirePaths(false, true);
 		const hits = paths.filter((w) => wireHitsBounds(w.points, { ...a, width: b.x - a.x, height: b.y - a.y })).map((w) => w.id);
-		insertion = planWireInsertion(
+		insertion = insertionPlan(node, hits, paths);
+		connectNotice = insertion ? 'Release to insert into the highlighted channel bundle. Esc cancels.' : '';
+	}
+
+	function insertionPlan(node: XyNode, hits: string[], paths: { id: string }[]) {
+		const plan = planWireInsertion(
 			node,
 			registry[node.type as NodeKind]?.category,
 			audioPorts(node.id, 'target'),
 			audioPorts(node.id, 'source'),
 			nodes,
 			edges,
-			hits
+			hits,
+			insertionHandles(groupDocument, groupPath)
 		);
-		if (insertion?.bundle.some((e) => !paths.some((p) => p.id === e.id))) insertion = null;
-		connectNotice = insertion ? 'Release to insert into the highlighted channel bundle. Esc cancels.' : '';
+		return plan?.bundle.some((e) => !paths.some((p) => p.id === e.id)) ? null : plan;
+	}
+
+	function insertIntoWires(id: string, plan: NonNullable<typeof insertion>) {
+		const ids = plan.connections.map(() => createId());
+		ids.forEach((id) => seenEdgeIds.add(id));
+		edges = saveWireInsertion(
+			groupDocument,
+			groupPath,
+			nodes.map((n) => ({ ...n, data: $state.snapshot(n.data) })),
+			edges,
+			id,
+			plan,
+			ids
+		);
+	}
+
+	function validateInsertion(before: Pipeline, after: Pipeline) {
+		assertRewireAcyclic(before.edges, after.edges);
+		const definitions = { ...groupLibrary.definitions, ...after.groups!.definitions };
+		for (const p of Object.values(groupLibrary.pipelines))
+			if (p.id !== pipeline.id && p.groups)
+				assertRewireAcyclic(expand(structuredClone(p.groups)).edges, expand({ ...structuredClone(p.groups), definitions }).edges);
 	}
 
 	function wirePaths(includeOrphans = true, includeProtected = false) {
@@ -880,15 +954,8 @@
 				if (motion.cancelled) restoreMotionPositions();
 				else if (motion.detach) edges = detachNodes(edges, motion.moved);
 				else if (insertion) {
-					const ids = insertion.connections.map(() => createId());
-					ids.forEach((id) => seenEdgeIds.add(id));
-					edges = applyWireInsertion(edges, motion.moved[0].id, insertion, ids);
-					const after = getSnapshot();
-					assertRewireAcyclic(before.edges, after.edges);
-					const definitions = { ...groupLibrary.definitions, ...after.groups!.definitions };
-					for (const p of Object.values(groupLibrary.pipelines))
-						if (p.id !== pipeline.id && p.groups)
-							assertRewireAcyclic(expand(structuredClone(p.groups)).edges, expand({ ...structuredClone(p.groups), definitions }).edges);
+					insertIntoWires(motion.moved[0].id, insertion);
+					validateInsertion(before, getSnapshot());
 				}
 			});
 			if (!motion.cancelled) commit(getSnapshot());
