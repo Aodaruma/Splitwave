@@ -18,7 +18,7 @@
 	import { modalManager } from '$lib/modules/overlay/modal';
 	import { copyGraph, offsetOrigin, pasteGraph } from '../utils/clipboard';
 	import { createHistoryRestorer } from '../utils/history_restore';
-	import { planAutoConnect, exposedAudioHandles, type AudioPorts } from '../utils/auto_connect';
+	import { planAutoConnect, planGroupPorts, createsCycle, type AudioPorts } from '../utils/auto_connect';
 	import { canvasShortcut } from '../utils/shortcuts';
 	import { alignNodes, insertReroute, planBulkBypass, withReroutePoints, type AlignmentAxis } from '../utils/layout';
 	import { applyWireInsertion, planWireInsertion, wireHitsBounds } from '../utils/insertion';
@@ -507,7 +507,7 @@
 		sockets: Point[];
 	} | null>(null);
 	let connectNotice = $state('');
-	let cutDrag = $state.raw<{ pointerId: number; points: Point[]; hits: Set<string> } | null>(null);
+	let cutDrag = $state.raw<{ pointerId: number; points: Point[]; hits: Set<string>; protectedHits: Set<string> } | null>(null);
 	let pointMotion = $state.raw<{ pointerId: number; edgeId: string; index: number; points: Point[]; start: Point; origin: Point } | null>(null);
 	let insertion = $state.raw<NonNullable<ReturnType<typeof planWireInsertion>> | null>(null);
 	let suppressRightMenu = false;
@@ -669,22 +669,32 @@
 		connectNotice = insertion ? 'Release to insert into the highlighted channel bundle. Esc cancels.' : '';
 	}
 
-	function wirePaths(includeOrphans = true) {
+	function wirePaths(includeOrphans = true, includeProtected = false) {
 		const byId = new Map(edges.map((e) => [e.id, e]));
 		const selector = includeOrphans ? '.svelte-flow__edge-path, path[data-wire-id]' : '.svelte-flow__edge-path';
 		return [...editorElement.querySelectorAll<SVGPathElement>(selector)].flatMap((path) => {
 			const id = path.dataset.wireId ?? path.closest<HTMLElement>('.svelte-flow__edge')?.dataset.id;
 			const edge = id ? byId.get(id) : undefined;
 			const matrix = path.getScreenCTM();
-			if (!edge || !editableWire(edge) || edge.hidden || !matrix) return [];
+			if (!edge || (!includeProtected && !editableWire(edge)) || edge.hidden || !matrix) return [];
 			const key = `${path.getAttribute('d')}:${matrix.a},${matrix.b},${matrix.c},${matrix.d},${matrix.e},${matrix.f}`;
 			let geometry = wireGeometry.get(path);
 			if (geometry?.key !== key) {
 				geometry = { key, points: screenPath(path, matrix) };
 				wireGeometry.set(path, geometry);
 			}
-			return [{ id: edge.id, points: geometry.points }];
+			return [{ id: edge.id, points: geometry.points, editable: editableWire(edge) }];
 		});
+	}
+	function traceCut(point: Point, paths = wirePaths(true, true)) {
+		if (!cutDrag) return;
+		const last = cutDrag.points[cutDrag.points.length - 1];
+		if (point.x === last.x && point.y === last.y) return;
+		for (const wire of paths) {
+			const hits = wire.editable ? cutDrag.hits : cutDrag.protectedHits;
+			if (!hits.has(wire.id) && crossesWire(last, point, wire.points)) hits.add(wire.id);
+		}
+		cutDrag.points.push(point);
 	}
 
 	function editWires(next: XyEdge[], keepFeeds = false) {
@@ -749,15 +759,9 @@
 				cancelCut();
 				return;
 			}
-			const paths = wirePaths();
+			const paths = wirePaths(true, true);
 			const samples = event.getCoalescedEvents?.() ?? [];
-			for (const sample of [...samples, event]) {
-				const next = { x: sample.clientX, y: sample.clientY };
-				const last = cutDrag.points[cutDrag.points.length - 1];
-				if (next.x === last.x && next.y === last.y) continue;
-				for (const wire of paths) if (!cutDrag.hits.has(wire.id) && crossesWire(last, next, wire.points)) cutDrag.hits.add(wire.id);
-				cutDrag.points.push(next);
-			}
+			for (const sample of [...samples, event]) traceCut({ x: sample.clientX, y: sample.clientY }, paths);
 			cutDrag = { ...cutDrag };
 		}
 		if (
@@ -783,12 +787,13 @@
 		}
 		if (cutDrag?.pointerId === event.pointerId && event.button === 2) {
 			// Include the final segment even when no pointermove was delivered before release.
-			const point = { x: event.clientX, y: event.clientY };
-			const last = cutDrag.points[cutDrag.points.length - 1];
-			if (point.x !== last.x || point.y !== last.y) for (const wire of wirePaths()) if (crossesWire(last, point, wire.points)) cutDrag.hits.add(wire.id);
+			traceCut({ x: event.clientX, y: event.clientY });
 			const hits = cutDrag.hits;
+			const protectedCount = cutDrag.protectedHits.size;
 			cancelCut();
 			editWires(edges.filter((e) => !hits.has(e.id)));
+			if (protectedCount)
+				connectNotice = `${protectedCount} protected group mappings kept. Use Edit ports to remove unused group ports; disconnect their external cables first.`;
 		}
 		onConnectEnd(event);
 		dragCandidate = null;
@@ -947,7 +952,8 @@
 			editorElement.focus({ preventScroll: true });
 			closeContextMenu();
 			suppressRightMenu = true;
-			cutDrag = { pointerId: event.pointerId, points: [{ x: event.clientX, y: event.clientY }], hits: new Set() };
+			connectNotice = '';
+			cutDrag = { pointerId: event.pointerId, points: [{ x: event.clientX, y: event.clientY }], hits: new Set(), protectedHits: new Set() };
 			editorElement.setPointerCapture(event.pointerId);
 			return;
 		}
@@ -1034,13 +1040,12 @@
 		const input = boundary[0] === BOUNDARY_INPUT;
 		const other = source === boundary[0] ? target : source;
 		const d = scopeAt(groupDocument, groupPath);
-		return exposedAudioHandles(audioPorts(other, input ? 'target' : 'source'), input ? 'target' : 'source', edges)
-			.filter((handle) => !d[input ? 'inputs' : 'outputs'].some((port) => port.node === localNodeId(other) && (port.handle ?? null) === handle))
-			.map((handle) =>
-				input
-					? { source: BOUNDARY_INPUT, sourceHandle: NEW_GROUP_PORT, target: other, targetHandle: handle }
-					: { source: other, sourceHandle: handle, target: BOUNDARY_OUTPUT, targetHandle: NEW_GROUP_PORT }
-			);
+		const exposed = d[input ? 'inputs' : 'outputs'].filter((port) => port.node === localNodeId(other)).map((port) => port.handle ?? null);
+		return planGroupPorts(audioPorts(other, input ? 'target' : 'source'), input ? 'target' : 'source', edges, exposed).map((handle) =>
+			input
+				? { source: BOUNDARY_INPUT, sourceHandle: NEW_GROUP_PORT, target: other, targetHandle: handle }
+				: { source: other, sourceHandle: handle, target: BOUNDARY_OUTPUT, targetHandle: NEW_GROUP_PORT }
+		);
 	}
 	function exposeConnections(connections: Connection[]) {
 		if (!groupPath.length) return;
@@ -1074,7 +1079,12 @@
 		if (!moved || !target) return;
 		const planned = quickConnections(source, target);
 		if (!planned.length) {
-			connectNotice = 'No new compatible audio connections (already connected, unavailable channels, or a cycle).';
+			const boundary = [source, target].some((id) => id === BOUNDARY_INPUT || id === BOUNDARY_OUTPUT);
+			connectNotice = boundary
+				? 'No additional audio ports available to expose. Outputs must have an input feed; fixed ports and channel limits are preserved.'
+				: createsCycle(source, target, edges)
+					? 'Cannot connect: this would create an audio loop.'
+					: 'No new compatible audio connections (already connected or no matching channels).';
 			return;
 		}
 		if (planned.some((connection) => boundaryPort(connection))) {
@@ -1838,6 +1848,8 @@
 			</svg>
 			<p role="status" class="pointer-events-none absolute top-14 right-3 z-10 rounded bg-neutral-100 p-2 text-xs text-neutral-1000">
 				Release to cut {cutDrag.hits.size} connections · Esc cancels
+				{#if cutDrag.protectedHits.size}
+					· {cutDrag.protectedHits.size} group mappings protected{/if}
 			</p>
 		{/if}
 		{#if connectNotice}

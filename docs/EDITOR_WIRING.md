@@ -21,7 +21,7 @@ L/R and numbered channels are compatible individual audio inputs: switching **de
 
 A shake requires three direction reversals on either screen axis within 700 ms, each traveling at least 24 CSS pixels from the preceding extreme, after an initial 24 pixel movement. Small jitter, one correction, slow movements, modifiers and dragging node controls do not count. The notice confirms a pending detach; release applies it together with the move. Repeated shakes in the same drag do nothing further. Esc, pointer cancellation or blur restores the starting positions and keeps the wires. Ordinary dragging retains XYFlow selection, snapping and group movement behavior.
 
-Boundary nodes and their noneditable exposed-port mapping wires are excluded. A moved group instance loses its external editable cables; its stored definition is retained. Multiple moved selected nodes also lose the cables between them. Unrelated graph connections remain intact, and no bypass or route healing is performed.
+Boundary nodes and their noneditable exposed-port mapping wires are excluded. Cutting across a protected mapping displays its count and explains how to remove an unused port through Edit ports after disconnecting external cables. A moved group instance loses its external editable cables; its stored definition is retained. Multiple moved selected nodes also lose the cables between them. Unrelated graph connections remain intact, and no bypass or route healing is performed.
 
 ## References and verification
 

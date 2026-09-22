@@ -169,10 +169,9 @@
 	.node-group {
 		/* Shadows keep the stacked cards outside measurement and hit testing. */
 		box-shadow:
-			inset 0 2px 0 var(--color-primary),
-			4px -4px 0 -1px var(--color-neutral-200),
-			4px -4px 0 0 var(--color-neutral-500),
-			8px -8px 0 -1px var(--color-neutral-100),
-			8px -8px 0 0 var(--color-neutral-400);
+			4px 4px 0 -1px var(--color-neutral-200),
+			4px 4px 0 0 var(--color-neutral-500),
+			8px 8px 0 -1px var(--color-neutral-100),
+			8px 8px 0 0 var(--color-neutral-400);
 	}
 </style>

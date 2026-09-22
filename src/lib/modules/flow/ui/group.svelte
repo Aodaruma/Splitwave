@@ -18,6 +18,7 @@
 	$effect(() => {
 		inputs;
 		outputs;
+		editing;
 		updateNodeInternals(id);
 	});
 </script>
@@ -32,32 +33,40 @@
 		<p class="text-[10px] text-neutral-900">
 			{actions.usage(String(data.definition)) > 1 ? `Shared · ${actions.usage(String(data.definition))} uses. Edits apply to all.` : 'Independent group'}
 		</p>
-		{#each [['inputs', inputs], ['outputs', outputs]] as const as [side, ports]}
-			{#each ports as port (port.id)}
-				<div class="relative flex min-h-6 items-center gap-1 text-[10px]">
-					<Handle
-						class="handle"
-						id={port.id}
-						type={side === 'inputs' ? 'target' : 'source'}
-						position={side === 'inputs' ? Position.Left : Position.Right} />
-					{#if editing}
-						<input
-							class="nodrag nopan min-w-0 flex-1 rounded bg-neutral-100 px-1"
-							aria-label="Port label"
-							value={port.label}
-							onchange={(e) => actions.port(id, side as 'inputs' | 'outputs', port.id, 'label', e.currentTarget.value)} />
-						<button class="nodrag nopan" aria-label="Move port up" onclick={() => actions.port(id, side as 'inputs' | 'outputs', port.id, 'up')}
-							>↑</button>
-						<button class="nodrag nopan" aria-label="Move port down" onclick={() => actions.port(id, side as 'inputs' | 'outputs', port.id, 'down')}
-							>↓</button>
-						<button
-							class="nodrag nopan"
-							aria-label="Remove unused port"
-							onclick={() => actions.port(id, side as 'inputs' | 'outputs', port.id, 'remove')}>×</button>
-					{:else}<span class="px-2">{side === 'inputs' ? '→' : '←'} {port.label}</span>{/if}
-				</div>
+		<div class="grid grid-cols-2 gap-x-3 gap-y-1">
+			{#each [['inputs', inputs], ['outputs', outputs]] as const as [side, ports], column}
+				{#each ports as port, row (port.id)}
+					<div
+						class="relative flex min-h-6 min-w-0 items-center gap-1 text-[10px]"
+						class:justify-end={side === 'outputs'}
+						style:grid-column={column + 1}
+						style:grid-row={row + 1}>
+						<Handle
+							class="handle"
+							id={port.id}
+							type={side === 'inputs' ? 'target' : 'source'}
+							position={side === 'inputs' ? Position.Left : Position.Right} />
+						{#if editing}
+							<input
+								class="nodrag nopan min-w-0 flex-1 rounded bg-neutral-100 px-1"
+								aria-label={`${side === 'inputs' ? 'Input' : 'Output'} port label`}
+								value={port.label}
+								onchange={(e) => actions.port(id, side as 'inputs' | 'outputs', port.id, 'label', e.currentTarget.value)} />
+							<button class="nodrag nopan" aria-label="Move port up" onclick={() => actions.port(id, side as 'inputs' | 'outputs', port.id, 'up')}
+								>↑</button>
+							<button
+								class="nodrag nopan"
+								aria-label="Move port down"
+								onclick={() => actions.port(id, side as 'inputs' | 'outputs', port.id, 'down')}>↓</button>
+							<button
+								class="nodrag nopan"
+								aria-label="Remove unused port"
+								onclick={() => actions.port(id, side as 'inputs' | 'outputs', port.id, 'remove')}>×</button>
+						{:else}<span class="min-w-0 truncate px-2" class:text-right={side === 'outputs'} title={port.label}>{port.label}</span>{/if}
+					</div>
+				{/each}
 			{/each}
-		{/each}
+		</div>
 		<button class="nodrag nopan text-left text-[10px] text-neutral-900" onclick={() => (editing = !editing)}
 			>{editing ? 'Done' : 'Edit port labels / order'}</button>
 	</div>

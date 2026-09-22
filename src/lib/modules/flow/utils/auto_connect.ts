@@ -77,6 +77,18 @@ export function exposedAudioHandles(ports: AudioPorts, side: 'source' | 'target'
 		.map((h) => h.id);
 }
 
+/** Repeated input exposure advances to the spare socket after existing channels are exposed. */
+export function planGroupPorts(ports: AudioPorts, side: 'source' | 'target', edges: Edge[], exposed: (string | null)[]): (string | null)[] {
+	const existing = new Set(exposed);
+	const candidates = exposedAudioHandles(ports, side, edges).filter((handle) => !existing.has(handle));
+	if (candidates.length || side !== 'target' || ports.ordered || !ports.channels) return candidates;
+	const occupied = edges.filter((e) => e.target === ports.id).map((e) => e.targetHandle ?? '');
+	const next = deriveSlots([...occupied, ...exposed.filter((h): h is string => h !== null)], true, ports.channels.max, ports.channels.min).find(
+		(slot) => !existing.has(slot.id)
+	);
+	return next ? [next.id] : [];
+}
+
 export function planAutoConnect(source: AudioPorts, target: AudioPorts, edges: Edge[]): Connection[] {
 	if (createsCycle(source.id, target.id, edges)) return [];
 	const inputs = [...target.handles].sort((a, b) => a.y - b.y);

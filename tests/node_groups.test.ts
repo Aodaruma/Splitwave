@@ -25,7 +25,7 @@ import { groupPathFromPage, groupPathFromUrl, groupUrl } from '../src/lib/module
 import { createHistoryRestorer } from '../src/lib/modules/flow/utils/history_restore';
 import { withDefaults } from '../src/lib/modules/pipeline/defaults';
 import { migrate, isFromFuture } from '../src/lib/modules/pipeline/migrations';
-import { exposedAudioHandles, planAutoConnect } from '../src/lib/modules/flow/utils/auto_connect';
+import { exposedAudioHandles, planGroupPorts, planAutoConnect } from '../src/lib/modules/flow/utils/auto_connect';
 import { copyGraph, pasteGraph } from '../src/lib/modules/flow/utils/clipboard';
 
 const node = (id: string, kind: PipelineNode['kind'] = 'gain'): PipelineNode => ({
@@ -134,6 +134,36 @@ describe('reusable node groups', () => {
 				[]
 			)
 		).toEqual(['left', 'right']);
+	});
+	it('repeated boundary gestures expose the next dynamic input within its channel limit', () => {
+		const ports = { id: 'a', handles: [], channels: { max: 3, min: 0, selfGrowing: false } };
+		const exposed: string[] = [];
+		for (let ch = 1; ch <= 3; ch++) {
+			const edges = exposed.map((handle) => ({ id: handle, source: BOUNDARY_INPUT, target: 'a', targetHandle: handle }));
+			expect(planGroupPorts(ports, 'target', edges, exposed)).toEqual([`ch${ch}`]);
+			exposed.push(`ch${ch}`);
+		}
+		expect(planGroupPorts(ports, 'target', [], exposed)).toEqual([]);
+	});
+	it('exposes existing stereo inputs together before advancing and does not invent output or fixed ports', () => {
+		const ports = { id: 'a', handles: [], channels: { max: 8, min: 0, selfGrowing: false } };
+		const edges = ['ch1', 'ch2', 'sidechain'].map((handle) => ({ id: handle, source: 'mic', target: 'a', targetHandle: handle }));
+		expect(planGroupPorts(ports, 'target', edges, [])).toEqual(['ch1', 'ch2']);
+		expect(planGroupPorts(ports, 'target', edges, ['ch1'])).toEqual(['ch2']);
+		expect(planGroupPorts(ports, 'target', edges, ['ch1', 'ch2'])).toEqual(['ch3']);
+		expect(planGroupPorts(ports, 'source', edges, ['ch1', 'ch2'])).toEqual([]);
+		expect(planGroupPorts(ports, 'source', [], [])).toEqual([]);
+		const fixed = {
+			id: 'fixed',
+			handles: [
+				{ id: 'L', y: 0 },
+				{ id: 'R', y: 10 },
+				{ id: 'sidechain', y: 20 }
+			]
+		};
+		expect(planGroupPorts(fixed, 'target', [], ['L', 'R'])).toEqual([]);
+		const nested = { ...ports, ordered: [{ id: 'stable', handle: 'ch1' }] };
+		expect(planGroupPorts(nested, 'target', [], ['stable'])).toEqual([]);
 	});
 	it('retains nested navigation URLs and falls back after Undo removes a group', () => {
 		const doc = documentFor(pipeline());
