@@ -2,7 +2,7 @@
 	import { getContext } from 'svelte';
 	import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/svelte';
 	import Wrapper from './node.svelte';
-	import { Layers, ChevronDown, Copy, Checkmark } from '$lib/components/icons';
+	import { Layers, ChevronDown, Checkmark } from '$lib/components/icons';
 	import { Popover, Menu, MenuItem } from '$lib/modules/overlay/ui';
 	import type { GroupPort } from '$lib/modules/pipeline/groups';
 	import { GROUP_ACTIONS } from '../utils/group_view';
@@ -17,6 +17,7 @@
 	}>(GROUP_ACTIONS);
 	let open = $state(false);
 	let uses = $derived(actions.usage(String(data.definition)));
+	let usageLabel = $derived(`${uses} ${uses === 1 ? 'use' : 'uses'}`);
 	let inputs = $derived((data.inputs ?? []) as GroupPort[]);
 	let outputs = $derived((data.outputs ?? []) as GroupPort[]);
 	const updateNodeInternals = useUpdateNodeInternals();
@@ -55,14 +56,6 @@
 								}}><span class="block truncate" title={choice.name}>{choice.name}</span></MenuItem>
 						{/each}
 					</div>
-					<div class="my-1 border-t border-neutral-400"></div>
-					<MenuItem
-						icon={Copy}
-						label="Make independent copy"
-						onclick={() => {
-							actions.independent(id);
-							open = false;
-						}} />
 					<p class="px-3 py-1 text-[10px] text-neutral-900">Choosing a group shares its definition.</p>
 				</Menu>
 			</Popover>
@@ -86,13 +79,11 @@
 						e.currentTarget.blur();
 					}
 				}} />
-			{#if uses > 1}
-				<button
-					class="shrink-0 rounded-r border-l border-neutral-400 px-2 text-xs tabular-nums hover:bg-neutral-200"
-					title={`${uses} uses · Click to make this group independent`}
-					aria-label={`Make independent copy (${uses} uses)`}
-					onclick={() => actions.independent(id)}>{uses}</button>
-			{/if}
+			<button
+				class="min-w-7 shrink-0 rounded-r border-l border-neutral-400 px-2 text-xs tabular-nums hover:bg-neutral-200"
+				title={`${usageLabel} · Click to make an independent copy`}
+				aria-label={`Make independent copy (${usageLabel})`}
+				onclick={() => actions.independent(id)}>{uses}</button>
 		</div>
 		<div class="grid grid-cols-2 gap-x-3 gap-y-1">
 			{#each [['inputs', inputs], ['outputs', outputs]] as const as [side, ports], column}
