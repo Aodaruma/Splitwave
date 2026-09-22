@@ -1,4 +1,16 @@
-import { frequencyPosition } from '$lib/modules/pipeline/eq';
+import { clamp, frequencyPosition, maxFrequency } from '$lib/modules/pipeline/eq';
+
+// Half-gain boundaries of the RBJ Bell after the bilinear frequency transform.
+export function bellQBounds(frequency: number, q: number, sampleRate: number): number[] {
+	const center = Math.tan((Math.PI * clamp(frequency, 20, maxFrequency(sampleRate))) / sampleRate);
+	const halfWidth = 1 / (2 * clamp(q, 0.1, 12));
+	return [-1, 1].map((side) => (Math.atan(center * (Math.sqrt(1 + halfWidth ** 2) + side * halfWidth)) * sampleRate) / Math.PI);
+}
+
+export function bellQAtFrequency(center: number, edge: number, sampleRate: number): number {
+	const ratio = Math.tan((Math.PI * edge) / sampleRate) / Math.tan((Math.PI * clamp(center, 20, maxFrequency(sampleRate))) / sampleRate);
+	return clamp(1 / Math.abs(ratio - 1 / ratio), 0.1, 12);
+}
 
 export const FREQUENCY_LABELS = [20, 30, 40, 50, 60, 80, 100, 200, 300, 400, 500, 800, 1000, 2000, 3000, 4000, 6000, 8000, 10000, 20000];
 export const frequencyLabel = (hz: number) => (hz >= 1000 ? `${Number((hz / 1000).toFixed(2))}k` : String(Math.round(hz)));

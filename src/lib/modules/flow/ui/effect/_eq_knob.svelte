@@ -73,9 +73,10 @@
 	}
 </script>
 
-<div class="nodrag nopan nowheel flex max-w-[150px] min-w-0 flex-1 items-center gap-1.5" class:opacity-50={disabled} class:grayscale={disabled}>
+<div class="nodrag nopan nowheel flex shrink-0 items-center gap-1" class:opacity-50={disabled} class:grayscale={disabled}>
 	<div
-		class="nodrag nopan nowheel size-13 shrink-0 cursor-ns-resize rounded-full text-amber-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600 dark:text-amber-400 dark:focus-visible:outline-amber-400"
+		class="nodrag nopan nowheel size-10 shrink-0 cursor-ns-resize rounded-full focus-visible:outline-2 focus-visible:outline-offset-2"
+		style:color="var(--eq-accent)"
 		style="touch-action: none"
 		style:cursor={disabled ? 'default' : 'ns-resize'}
 		role="slider"
@@ -112,11 +113,12 @@
 			<path d="M26 14V21" transform="rotate({angle} 26 26)" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
 		</svg>
 	</div>
-	<div class="min-w-0 flex-1">
+	<div class="shrink-0">
 		<span class="mb-1 block text-[10px] font-medium text-neutral-1200" title={description}>{label}</span>
 		<div class="flex h-6 items-center rounded border border-neutral-500 bg-neutral-50 focus-within:border-amber-600 dark:focus-within:border-amber-400">
 			<input
-				class="nodrag nopan nowheel min-w-0 flex-1 rounded bg-transparent py-1 pl-1 text-center font-mono text-[11px] text-neutral-1200 tabular-nums focus-visible:outline-2 focus-visible:outline-amber-600 dark:focus-visible:outline-amber-400"
+				class="nodrag nopan nowheel min-w-0 rounded bg-transparent px-1 py-1 text-center font-mono text-[11px] text-neutral-1200 tabular-nums focus-visible:outline-2 focus-visible:outline-amber-600 dark:focus-visible:outline-amber-400"
+				style:width="7ch"
 				type="number"
 				aria-label="{label} value{unit ? ` (${unit})` : ''}"
 				{min}

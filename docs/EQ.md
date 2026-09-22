@@ -4,7 +4,9 @@ New EQ nodes use eight fixed shapes: low cut, low shelf, four Bell bands, high s
 
 Drag a numbered point horizontally for logarithmic frequency and vertically for gain. Select a band to edit the circular knobs or numeric inputs. Shift makes pointer and arrow-key adjustments finer. Arrow keys move a point; Home or double-click resets its frequency, gain and Q. Knob arrows adjust the value, Enter or double-click resets it, and Home/End select its bounds. Cut filters retain their saved gain but do not use it; their gain control is hidden. Q controls shelf/cut resonance as well as Bell bandwidth. Disabled bands are gray and remain selectable, but their parameters cannot be edited until enabled. Effect bypass disables the parameter area. Controls isolate canvas drag, pan, wheel and keyboard interactions.
 
-Minor frequency ticks and adaptive labels share the points' logarithmic axis. Default and Voice guide strips show approximate listening ranges on that axis. The guide selection is saved with the node as editor data and does not change the response.
+Bands have individual colors shared by their points, selectors and compact parameter knobs. Alt+vertical drag on a point or Alt+Up/Down changes only Q, keeping frequency and gain fixed. An enabled Bell band shows its half-gain range; drag anywhere along either vertical boundary to adjust Q horizontally. Boundary arrow keys narrow or widen the band, and Shift gives finer adjustments. The ON/OFF control is on the left of the knob row, with the band reset on the right.
+
+Frequency ticks use uniform line weight and adaptive labels on the points' logarithmic axis. Default and Voice guide strips show approximate listening ranges on that axis. The guide selection is saved with the node as editor data and does not change the response. Reset curve and the guide dropdown sit alongside the preset and EQ mode label.
 
 ## Compatibility
 

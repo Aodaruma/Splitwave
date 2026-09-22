@@ -27,7 +27,7 @@
 	import { PresetBar } from '$lib/modules/preset/ui';
 	import type { PresetData } from '$lib/modules/preset';
 	import { formatFreq } from '$lib/components/format';
-	import { frequencyTicks, frequencyLabels, majorFrequency, guideSegments, type EqGuide } from './_eq_display';
+	import { frequencyTicks, frequencyLabels, guideSegments, bellQBounds, bellQAtFrequency, type EqGuide } from './_eq_display';
 
 	let { id, data }: NodeProps<Node<EqNodeData, 'eq'>> = $props();
 	const flow = useSvelteFlow();
@@ -71,6 +71,8 @@
 	let ticks = $derived(frequencyTicks(max));
 	let labels = $derived(frequencyLabels(max, plotWidth));
 	let segments = $derived(guideSegments(guide, max, plotWidth));
+	const bandHues = [8, 30, 52, 100, 154, 184, 218, 276, 300, 330];
+	let qBounds = $derived(parametric && band.filter === 'bell' && !disabled ? bellQBounds(band.frequency, band.q, sr) : []);
 	const yPosition = (db: number) => (18 - clamp(db, -18, 18)) / 36;
 	let frequencies = $derived(parametric ? eq.bands.map((b) => b.frequency) : GRAPHIC_FREQUENCIES);
 	let curve = $derived.by(() =>
@@ -146,8 +148,18 @@
 		selection = 0;
 		patch({ mode, bands, gainsDb });
 	}
-	let drag: { id: number; band: number; x: number; y: number; frequency: number; gain: number } | null = null;
-	function down(i: number, e: PointerEvent) {
+	let drag: {
+		id: number;
+		band: number;
+		x: number;
+		y: number;
+		frequency: number;
+		gain: number;
+		q: number;
+		mode: 'position' | 'q' | 'width';
+		side: number;
+	} | null = null;
+	function down(i: number, e: PointerEvent, mode: 'position' | 'width' = 'position', side = 0) {
 		if (e.button !== 0) return;
 		e.preventDefault();
 		e.stopPropagation();
@@ -156,12 +168,36 @@
 		el.focus();
 		if (!bandEditable(eq, i)) return;
 		el.setPointerCapture(e.pointerId);
-		drag = { id: e.pointerId, band: i, x: e.clientX, y: e.clientY, frequency: frequencies[i], gain: parametric ? eq.bands[i].gainDb : eq.gainsDb[i] };
+		drag = {
+			id: e.pointerId,
+			band: i,
+			x: e.clientX,
+			y: e.clientY,
+			frequency: frequencies[i],
+			gain: parametric ? eq.bands[i].gainDb : eq.gainsDb[i],
+			q: parametric ? eq.bands[i].q : 1,
+			mode: parametric && e.altKey ? 'q' : mode,
+			side
+		};
 	}
 	function move(e: PointerEvent) {
 		if (!drag || drag.id !== e.pointerId || !bandEditable(eq, drag.band)) return;
 		const rect = plot.getBoundingClientRect(),
 			scale = e.shiftKey ? 0.1 : 1;
+		if (drag.mode !== 'position') {
+			let q = drag.q;
+			if (drag.mode === 'q') q *= 2 ** (((drag.y - e.clientY) / 60) * scale);
+			else {
+				const edge = bellQBounds(drag.frequency, drag.q, sr)[drag.side];
+				const position = frequencyPosition(edge, max) + ((e.clientX - drag.x) / rect.width) * scale;
+				const center = frequencyPosition(drag.frequency, max);
+				q = bellQAtFrequency(drag.frequency, positionFrequency(drag.side === 0 ? Math.min(position, center) : Math.max(position, center), max), sr);
+			}
+			q = clamp(q, 0.1, 12);
+			setBand(drag.band, { q: Math.round(q * 100) / 100 });
+			drag = { ...drag, x: e.clientX, y: e.clientY, q };
+			return;
+		}
 		const frequency = positionFrequency(frequencyPosition(drag.frequency, max) + ((e.clientX - drag.x) / rect.width) * scale, max);
 		const gain = clamp(drag.gain - ((e.clientY - drag.y) / rect.height) * 36 * scale, -18, 18);
 		if (parametric)
@@ -181,6 +217,10 @@
 		e.stopPropagation();
 		if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home'].includes(e.key)) e.preventDefault();
 		if (!bandEditable(eq, i)) return;
+		if (parametric && e.altKey && ['ArrowUp', 'ArrowDown'].includes(e.key)) {
+			setBand(i, { q: clamp(eq.bands[i].q * 2 ** ((e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 0.01 : 0.1)), 0.1, 12) });
+			return;
+		}
 		if (e.key === 'Home') resetBand(i);
 		else if (e.key === 'ArrowUp' || e.key === 'ArrowDown')
 			setGain(i, (parametric ? eq.bands[i].gainDb : eq.gainsDb[i]) + (e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 0.1 : 1));
@@ -208,27 +248,26 @@
 	bypassed={eq.bypassed}
 	onBypass={() => patch({ bypassed: !eq.bypassed })}>
 	<div
-		class="nodrag nopan nowheel flex w-[580px] flex-col gap-2"
+		class="eq-controls nodrag nopan nowheel flex w-[580px] flex-col gap-2"
+		style:--band-hue={bandHues[selected]}
 		class:grayscale={eq.bypassed}
 		onkeydown={(e) => e.stopPropagation()}
 		role="toolbar"
 		tabindex="-1"
 		aria-label="EQ controls">
-		<div class="flex items-center gap-2">
+		<div class="flex items-center gap-2 text-[10px] text-neutral-1100">
 			<div class="min-w-0 flex-1" inert={eq.bypassed}><PresetBar kind="eq" data={eq} onApply={applyPreset} /></div>
 			<span class="shrink-0 text-[11px] font-medium text-neutral-1100">
 				{channel ? 'Channel EQ · 8' : parametric ? 'Compatibility · saved shapes' : 'Legacy EQ · graphic10'}
 			</span>
-		</div>
-		<div class="flex items-center justify-end gap-2 text-[10px] text-neutral-1100">
 			<button
 				type="button"
-				class="nodrag nopan nowheel shrink-0 rounded border border-neutral-500 px-2 py-1 hover:bg-neutral-300 focus-visible:outline-2 focus-visible:outline-amber-600 disabled:cursor-default disabled:opacity-50"
+				class="nodrag nopan nowheel h-[30px] shrink-0 rounded border border-neutral-500 px-2 hover:bg-neutral-300 focus-visible:outline-2 focus-visible:outline-amber-600 disabled:cursor-default disabled:opacity-50"
 				disabled={eq.bypassed}
 				title="Reset to eight bands: 1 Low cut, 2 Low shelf, 3–6 Bell, 7 High shelf, 8 High cut. Resets all values; Undo restores this EQ."
 				onclick={initialize}>Reset curve</button>
 			<select
-				class="nodrag nopan nowheel rounded border border-neutral-500 bg-neutral-100 px-2 py-1 text-neutral-1200 focus-visible:outline-2 focus-visible:outline-amber-600"
+				class="nodrag nopan nowheel h-[30px] rounded border border-neutral-500 bg-neutral-100 px-2 text-neutral-1200 focus-visible:outline-2 focus-visible:outline-amber-600"
 				aria-label="Frequency guide"
 				title="Approximate frequency ranges for reference; does not change audio"
 				value={guide}
@@ -264,8 +303,8 @@
 							x2={frequencyPosition(f, max) * W}
 							y2={H}
 							stroke="currentColor"
-							stroke-opacity={majorFrequency(f) ? 0.38 : 0.13}
-							stroke-width={majorFrequency(f) ? 1 : 0.6} />
+							stroke-opacity="0.13"
+							stroke-width="0.6" />
 					{/each}
 					{#each segments.slice(1) as segment}
 						<line x1={segment.start * W} x2={segment.start * W} y1="0" y2={H} stroke="currentColor" stroke-opacity="0.16" stroke-dasharray="2 4" />
@@ -273,6 +312,44 @@
 					<path d="{curve} L{W},{H / 2} L0,{H / 2} Z" class="fill-amber-600/10 dark:fill-amber-400/10" />
 					<path d={curve} class="stroke-amber-700 dark:stroke-amber-400" stroke-width="2" vector-effect="non-scaling-stroke" fill="none" />
 				</svg>
+				{#if qBounds.length}
+					<div
+						class="pointer-events-none absolute inset-y-0 bg-current opacity-[0.06]"
+						style:color="var(--eq-accent)"
+						style:left={frequencyPosition(qBounds[0], max) * 100 + '%'}
+						style:width={(frequencyPosition(qBounds[1], max) - frequencyPosition(qBounds[0], max)) * 100 + '%'}>
+					</div>
+					{#each qBounds as edge, side}
+						{#if edge >= 20 && edge <= max}
+							<button
+								type="button"
+								class="q-handle group nodrag nopan nowheel absolute inset-y-0 z-[1] -translate-x-1/2 cursor-ew-resize bg-transparent focus-visible:outline-2"
+								style:color="var(--eq-accent)"
+								style:left={frequencyPosition(edge, max) * 100 + '%'}
+								style:width={Math.min(12, (frequencyPosition(qBounds[1], max) - frequencyPosition(qBounds[0], max)) * plotWidth) + 'px'}
+								style:touch-action="none"
+								aria-label="Band {selected + 1} Q {side === 0 ? 'left' : 'right'} handle"
+								title="Drag horizontally to adjust Q; Up/Down to narrow/widen; Shift: fine"
+								onpointerdown={(e) => down(selected, e, 'width', side)}
+								onpointermove={move}
+								onpointerup={end}
+								onpointercancel={end}
+								onlostpointercapture={() => (drag = null)}
+								onkeydown={(e) => {
+									e.stopPropagation();
+									if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+										e.preventDefault();
+										const direction = ['ArrowUp', 'ArrowRight'].includes(e.key) ? 1 : -1;
+										setBand(selected, { q: clamp(band.q * 2 ** (direction * (e.shiftKey ? 0.01 : 0.1)), 0.1, 12) });
+									}
+								}}>
+								<span
+									class="pointer-events-none absolute inset-y-0 left-1/2 border-l border-dashed opacity-40 group-hover:opacity-100 group-focus-visible:opacity-100"
+								></span>
+							</button>
+						{/if}
+					{/each}
+				{/if}
 				{#each frequencies as freq, i}
 					{@const b = parametric ? eq.bands[i] : null}
 					{@const gain = b ? (['lowCut', 'highCut'].includes(b.filter) ? 0 : b.gainDb) : eq.gainsDb[i]}
@@ -284,12 +361,13 @@
 							: 'border-neutral-800 bg-neutral-100 text-neutral-1200 hover:border-amber-600 dark:hover:border-amber-400'}"
 						class:border-dashed={b && !b.enabled}
 						class:is-off={!bandEditable(eq, i)}
+						style:--band-hue={bandHues[i]}
 						style="left:{frequencyPosition(freq, max) * 100}%;top:{yPosition(gain) * 100}%;touch-action:none"
 						title="Band {i + 1} · {formatFreq(freq)} — {eq.bypassed
 							? 'EQ bypassed'
 							: b && !b.enabled
 								? 'Off; select to enable below'
-								: `${parametric ? 'Drag frequency / gain' : 'Drag gain'}; Shift: fine; double-click: reset`}"
+								: `${parametric ? 'Drag frequency / gain; Alt+drag up/down: Q' : 'Drag gain'}; Shift: fine; double-click: reset`}"
 						aria-label="Band {i + 1}, {Math.round(Math.min(freq, max))} Hz, {gain.toFixed(1)} dB{b
 							? `, Q ${b.q}, ${filters.find((f) => f.value === b.filter)?.label}, ${b.enabled ? 'enabled' : 'disabled'}`
 							: ''}{eq.bypassed ? ', EQ bypassed' : ''}"
@@ -346,6 +424,7 @@
 						: 'border-neutral-400 bg-neutral-100 text-neutral-1200 hover:bg-neutral-300'}"
 					class:border-dashed={!enabled}
 					class:is-off={!bandEditable(eq, i)}
+					style:--band-hue={bandHues[i]}
 					title="Band {i + 1} · {formatFreq(freq)}{parametric ? ` · ${filters.find((f) => f.value === eq.bands[i].filter)?.label}` : ''} · {enabled
 						? 'On'
 						: 'Off'}"
@@ -356,14 +435,15 @@
 					onclick={() => (selection = i)}>
 					<span>{i + 1}</span>
 					{#if parametric}{@render filterShape(eq.bands[i].filter)}{/if}
-					<span
-						class="h-1.5 w-1.5 shrink-0 rounded-full {enabled && !eq.bypassed ? 'bg-amber-600 dark:bg-amber-400' : 'bg-neutral-700'}"
-						aria-hidden="true"></span>
+					<span class="h-1.5 w-1.5 shrink-0 rounded-full bg-current" aria-hidden="true"></span>
 				</button>
 			{/each}
 		</div>
-		<div class="rounded-lg border border-neutral-400 bg-neutral-100 px-2 py-2" role="group" aria-label="Band {selected + 1} controls">
-			<div class="flex items-center justify-between gap-2">
+		<div
+			class="grid min-h-14 grid-cols-[1fr_auto_1fr] items-center gap-3 rounded-lg border border-neutral-400 bg-neutral-100 p-2"
+			role="group"
+			aria-label="Band {selected + 1} controls">
+			<div class="justify-self-start">
 				{#if parametric}
 					<button
 						type="button"
@@ -380,35 +460,12 @@
 						</svg>
 						<span class="text-[10px] font-semibold">{band.enabled ? 'ON' : 'OFF'}</span>
 					</button>
-					<div class="flex items-center gap-2 text-[11px] text-neutral-1100">
-						{@render filterShape(band.filter)}
-						<span>Band {selected + 1} · {filters.find((f) => f.value === band.filter)?.label}</span>
-					</div>
 				{:else}
 					<span class="px-1 font-mono text-[11px] text-neutral-1200 tabular-nums" title="Fixed legacy band frequency"
 						>{formatFreq(frequencies[selected])}</span>
 				{/if}
-				<button
-					type="button"
-					class="eq-icon nodrag nopan nowheel text-neutral-1200"
-					{disabled}
-					aria-label="Reset band {selected + 1}"
-					title="Reset band {selected + 1} {parametric ? 'frequency, gain and Q' : 'gain'}"
-					onclick={() => resetBand(selected)}>
-					<svg
-						viewBox="0 0 24 24"
-						class="size-4"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="1.8"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						aria-hidden="true">
-						<path d="M4 4v6h6M4 10a8 8 0 1 1 .7 6" />
-					</svg>
-				</button>
 			</div>
-			<div class="flex justify-center gap-3 pt-3 pb-1">
+			<div class="flex items-center justify-center gap-3">
 				{#if parametric}
 					<Knob
 						label="Frequency"
@@ -451,6 +508,25 @@
 						onChange={(v) => setBand(selected, { q: v })} />
 				{/if}
 			</div>
+			<button
+				type="button"
+				class="eq-icon nodrag nopan nowheel justify-self-end text-neutral-1200"
+				{disabled}
+				aria-label="Reset band {selected + 1}"
+				title="Reset band {selected + 1} {parametric ? 'frequency, gain and Q' : 'gain'}"
+				onclick={() => resetBand(selected)}>
+				<svg
+					viewBox="0 0 24 24"
+					class="size-4"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="1.8"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+					aria-hidden="true">
+					<path d="M4 4v6h6M4 10a8 8 0 1 1 .7 6" />
+				</svg>
+			</button>
 		</div>
 		{#if parametric && eq.bands.some((b) => b.frequency > max)}<p class="text-[10px] text-amber-900 dark:text-amber-200">
 				Frequencies above {Math.round(max)} Hz are limited to 49% of this sample rate. Saved values are retained.
@@ -460,7 +536,7 @@
 			</p>{/if}
 		<p id="{id}-eq-help" class="sr-only">
 			{parametric
-				? 'Drag or use Left / Right for frequency; Up / Down for gain. Cut filters have no gain control.'
+				? 'Drag or use Left / Right for frequency; Up / Down for gain. Alt+drag up/down or Alt+Up/Down adjusts Q only. Drag anywhere along either vertical edge of a Bell band’s shaded range to adjust Q. Cut filters have no gain control.'
 				: 'Drag or use Up / Down for gain. Frequencies are fixed.'}
 			Hold Shift for fine adjustment. Double-click or Home to reset the band. Off bands remain selectable; enable the selected band with its ON/OFF button to
 			edit it. Bypass disables audio parameter editing.
@@ -474,6 +550,25 @@
 </Wrapper>
 
 <style>
+	.eq-controls,
+	.eq-band {
+		--eq-accent: hsl(var(--band-hue) 52% 38%);
+	}
+	:global(.dark) .eq-controls,
+	:global(.dark) .eq-band {
+		--eq-accent: hsl(var(--band-hue) 65% 70%);
+	}
+	.eq-band:not(.is-off) {
+		color: var(--eq-accent);
+		border-color: var(--eq-accent);
+	}
+	.eq-band:not(.is-off)[aria-pressed='true'] {
+		background: color-mix(in srgb, var(--eq-accent) 18%, var(--color-neutral-100));
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--eq-accent) 25%, transparent);
+	}
+	.eq-band {
+		z-index: 2;
+	}
 	.eq-band.is-off {
 		color: var(--color-neutral-1000);
 		background-color: color-mix(in srgb, var(--color-neutral-200) 30%, transparent);
