@@ -257,7 +257,7 @@ describe('editable cable points', () => {
 		const after = materialize(initial, doc);
 		expect(after.edges).toEqual(initial.edges);
 		expect(initial.groups!.definitions[doc.root].edges[0].data!.reroutes![0].x).toBe(250);
-		let library = saveToLibrary({ version: 3, pipelines: {}, definitions: {} }, initial);
+		let library = saveToLibrary({ version: 4, pipelines: {}, definitions: {} }, initial);
 		library = saveToLibrary(library, {
 			...after,
 			groups: {
@@ -379,7 +379,7 @@ describe('snapshot transactions and shared definitions', () => {
 		expect(after.nodes.filter((n) => n.data.bypassed === true)).toHaveLength(4);
 		expect(after.edges).toEqual(before.edges);
 		expect(before.nodes.filter((n) => n.data.bypassed === true)).toHaveLength(0);
-		const library = saveToLibrary({ version: 3, pipelines: {}, definitions: {} }, after);
+		const library = saveToLibrary({ version: 4, pipelines: {}, definitions: {} }, after);
 		expect(library.pipelines[initial.id].nodes.filter((n) => n.data.bypassed === true)).toHaveLength(4);
 	});
 

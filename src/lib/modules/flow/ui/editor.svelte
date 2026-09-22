@@ -73,7 +73,7 @@
 		type GroupLibrary
 	} from '$lib/modules/pipeline/group_library';
 	import { GROUP_ACTIONS, BOUNDARY_INPUT, BOUNDARY_OUTPUT, groupView, saveGroupView } from '../utils/group_view';
-	import { NEW_GROUP_PORT, boundaryPort, exposePort, editPort, survivingGroupPath, type PortSide } from '../utils/group_ports';
+	import { NEW_GROUP_PORT, boundaryPort, exposePort, editPort, cutGroupWires, survivingGroupPath, type PortSide } from '../utils/group_ports';
 	import { groupPathFromPage, groupUrl } from '../utils/group_navigation';
 	const editorNodeTypes = { ...nodeTypes, group: Group, groupBoundary: GroupBoundary };
 	import ChannelEdge from './_channel_edge.svelte';
@@ -90,7 +90,7 @@
 	let { pipeline }: { pipeline: Pipeline } = $props();
 	let groupDocument = $state.raw<GroupDocument>(untrack(() => documentFor($state.snapshot(pipeline))));
 	let groupPath = $state.raw<string[]>([]);
-	let groupLibrary = $state.raw<GroupLibrary>({ version: 3, pipelines: {}, definitions: {} });
+	let groupLibrary = $state.raw<GroupLibrary>({ version: 4, pipelines: {}, definitions: {} });
 	let chooserOpen = $state(false);
 	let chooserId = $state('');
 	let chooserLinked = $state(false);
@@ -128,12 +128,14 @@
 	}
 	function documentEdit(edit: (doc: GroupDocument) => void) {
 		try {
-			const next = documentFor(getSnapshot());
+			const before = getSnapshot();
+			const next = documentFor(before);
 			edit(next);
-			expand(next);
+			assertRewireAcyclic(before.edges, expand(next).edges);
 			const all = { ...groupLibrary.definitions, ...next.definitions };
 			for (const p of Object.values(groupLibrary.pipelines))
-				if (p.id !== pipeline.id && p.groups) expand({ ...structuredClone(p.groups), definitions: all });
+				if (p.id !== pipeline.id && p.groups)
+					assertRewireAcyclic(expand(structuredClone(p.groups)).edges, expand({ ...structuredClone(p.groups), definitions: all }).edges);
 			editGraph(() => {
 				groupDocument = next;
 				showScope();
@@ -350,7 +352,8 @@
 		documentEdit((doc) => {
 			const d = scopeAt(doc, groupPath),
 				local = localNodeId(nodeId);
-			if ([...d.inputs, ...d.outputs].some((p) => p.node === local)) throw new Error('Remove the exposed group port before deleting this node.');
+			if ([...d.inputs, ...d.outputs].some((p) => !p.disconnected && p.node === local))
+				throw new Error('Disconnect the exposed group port before deleting this node.');
 			d.nodes = d.nodes.filter((n) => n.id !== local);
 			d.edges = d.edges.filter((e) => e.source !== local && e.target !== local);
 		});
@@ -683,7 +686,7 @@
 				geometry = { key, points: screenPath(path, matrix) };
 				wireGeometry.set(path, geometry);
 			}
-			return [{ id: edge.id, points: geometry.points, editable: editableWire(edge) }];
+			return [{ id: edge.id, points: geometry.points, editable: editableWire(edge) || (includeProtected && !!boundaryPort(edge)) }];
 		});
 	}
 	function traceCut(point: Point, paths = wirePaths(true, true)) {
@@ -791,9 +794,9 @@
 			const hits = cutDrag.hits;
 			const protectedCount = cutDrag.protectedHits.size;
 			cancelCut();
-			editWires(edges.filter((e) => !hits.has(e.id)));
-			if (protectedCount)
-				connectNotice = `${protectedCount} protected group mappings kept. Use Edit ports to remove unused group ports; disconnect their external cables first.`;
+			if (edges.some((e) => hits.has(e.id) && boundaryPort(e))) documentEdit((doc) => cutGroupWires(doc, groupPath, edges, hits));
+			else editWires(edges.filter((e) => !hits.has(e.id)));
+			if (protectedCount) connectNotice = `${protectedCount} protected connections kept.`;
 		}
 		onConnectEnd(event);
 		dragCandidate = null;
@@ -1040,12 +1043,19 @@
 		const input = boundary[0] === BOUNDARY_INPUT;
 		const other = source === boundary[0] ? target : source;
 		const d = scopeAt(groupDocument, groupPath);
-		const exposed = d[input ? 'inputs' : 'outputs'].filter((port) => port.node === localNodeId(other)).map((port) => port.handle ?? null);
-		return planGroupPorts(audioPorts(other, input ? 'target' : 'source'), input ? 'target' : 'source', edges, exposed).map((handle) =>
-			input
-				? { source: BOUNDARY_INPUT, sourceHandle: NEW_GROUP_PORT, target: other, targetHandle: handle }
-				: { source: other, sourceHandle: handle, target: BOUNDARY_OUTPUT, targetHandle: NEW_GROUP_PORT }
-		);
+		const exposed = d[input ? 'inputs' : 'outputs']
+			.filter((port) => !port.disconnected && port.node === localNodeId(other))
+			.map((port) => port.handle ?? null);
+		return planGroupPorts(audioPorts(other, input ? 'target' : 'source'), input ? 'target' : 'source', edges, exposed).map((handle) => {
+			const ports = d[input ? 'inputs' : 'outputs'];
+			const reusable =
+				ports.find((p) => p.disconnected && p.node === localNodeId(other) && (p.handle ?? null) === handle) ??
+				ports.find((p) => p.disconnected && (p.handle ?? null) === handle);
+			const socket = reusable?.id ?? NEW_GROUP_PORT;
+			return input
+				? { source: BOUNDARY_INPUT, sourceHandle: socket, target: other, targetHandle: handle }
+				: { source: other, sourceHandle: handle, target: BOUNDARY_OUTPUT, targetHandle: socket };
+		});
 	}
 	function exposeConnections(connections: Connection[]) {
 		if (!groupPath.length) return;
@@ -1058,14 +1068,22 @@
 				const audio = audioPorts(port.node, port.side === 'inputs' ? 'target' : 'source');
 				const handle = audio.ordered?.find((p) => p.id === port.handle)?.handle ?? port.handle;
 				const label = String(node?.data.name ?? registry[node?.type as NodeKind]?.label ?? 'Audio');
-				exposePort(d, port.side, localNodeId(port.node), port.handle, `${label} · ${handle ?? 'Audio'}`);
+				exposePort(d, port.side, localNodeId(port.node), port.handle, `${label} · ${handle ?? 'Audio'}`, port.port);
 			}
 		});
 	}
 	function onSocketConnect(connection: Connection) {
 		if (!boundaryPort(connection)) return;
 		// XYFlow adds the temporary edge before calling onconnect; only the stable port is saved.
-		edges = edges.filter((e) => !boundaryPort(e as Connection));
+		edges = edges.filter(
+			(e) =>
+				!(
+					e.source === connection.source &&
+					e.target === connection.target &&
+					(e.sourceHandle ?? null) === (connection.sourceHandle ?? null) &&
+					(e.targetHandle ?? null) === (connection.targetHandle ?? null)
+				)
+		);
 		seenEdgeIds = new Set(edges.map((e) => e.id));
 		exposeConnections([connection]);
 	}
@@ -1146,7 +1164,7 @@
 							documentEdit((doc) => {
 								const d = scopeAt(doc, groupPath),
 									local = localNodeId(id);
-								if (!d[side].some((p) => p.node === local && p.handle === (handle.id ?? undefined)))
+								if (!d[side].some((p) => !p.disconnected && p.node === local && p.handle === (handle.id ?? undefined)))
 									d[side].push({
 										id: createId(),
 										node: local,
@@ -1747,10 +1765,14 @@
 			bind:edges
 			nodeTypes={editorNodeTypes}
 			onconnect={onSocketConnect}
-			isValidConnection={(connection) => ![connection.source, connection.target].some((id) => id.startsWith('$group-')) || !!boundaryPort(connection)}
+			isValidConnection={(connection) => {
+				if (![connection.source, connection.target].some((id) => id.startsWith('$group-'))) return true;
+				const port = boundaryPort(connection);
+				return !!port && (!port.port || !!scopeAt(groupDocument, groupPath)[port.side].find((p) => p.id === port.port)?.disconnected);
+			}}
 			onbeforedelete={async ({ nodes: deleted, edges: deletedEdges }) => {
 				const d = scopeAt(groupDocument, groupPath);
-				if (deleted.some((n) => [...d.inputs, ...d.outputs].some((p) => p.node === localNodeId(n.id)))) {
+				if (deleted.some((n) => [...d.inputs, ...d.outputs].some((p) => !p.disconnected && p.node === localNodeId(n.id)))) {
 					audioStore.reportError(new Error('Remove the group port before deleting its node. Connected ports cannot be removed.'));
 					return false;
 				}
@@ -1849,7 +1871,7 @@
 			<p role="status" class="pointer-events-none absolute top-14 right-3 z-10 rounded bg-neutral-100 p-2 text-xs text-neutral-1000">
 				Release to cut {cutDrag.hits.size} connections · Esc cancels
 				{#if cutDrag.protectedHits.size}
-					· {cutDrag.protectedHits.size} group mappings protected{/if}
+					· {cutDrag.protectedHits.size} protected connections{/if}
 			</p>
 		{/if}
 		{#if connectNotice}

@@ -37,7 +37,7 @@ export function groupView(doc: GroupDocument, path: string[]): { nodes: Node[]; 
 				data: { name: side === 'inputs' ? 'Group inputs' : 'Group outputs', ports: d[side], side: type },
 				deletable: false
 			});
-			for (const p of d[side])
+			for (const p of d[side].filter((p) => !p.disconnected))
 				edges.push({
 					id: `${boundary}:${p.id}`,
 					type: 'channel',

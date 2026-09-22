@@ -20,10 +20,13 @@
 
 <Wrapper label={String(data.name)}>
 	{#each ports as port (port.id)}
-		<div class="relative flex min-h-6 items-center gap-1 px-2 text-[10px]">
+		<div
+			class="relative flex min-h-6 items-center gap-1 px-2 text-[10px]"
+			class:text-neutral-700={port.disconnected}
+			title={port.disconnected ? 'Disconnected · drag a wire to reconnect this socket' : port.label}>
 			<Handle
 				class="handle"
-				isConnectable={false}
+				isConnectable={!!port.disconnected}
 				id={port.id}
 				type={data.side === 'source' ? 'source' : 'target'}
 				position={data.side === 'source' ? Position.Right : Position.Left} />

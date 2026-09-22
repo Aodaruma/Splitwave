@@ -15,12 +15,12 @@ const LIBRARY_KEY = 'groupLibrary';
 let writes: Promise<unknown> = Promise.resolve();
 
 async function library(): Promise<GroupLibrary> {
-	const current = await store.get<GroupLibrary>(LIBRARY_KEY);
+	const current = await store.get<Omit<GroupLibrary, 'version'> & { version: number }>(LIBRARY_KEY);
 	if (current) {
-		if (current.version !== 3) throw new Error('This group library requires a newer version of Splitwave');
-		return current;
+		if (current.version !== 3 && current.version !== 4) throw new Error('This group library requires a newer version of Splitwave');
+		return { ...current, version: 4 };
 	}
-	const initial: GroupLibrary = { version: 3, pipelines: {}, definitions: {} };
+	const initial: GroupLibrary = { version: 4, pipelines: {}, definitions: {} };
 	for (const [key, value] of await store.entries<Pipeline>()) {
 		if (!key.startsWith(KEY_PREFIX)) continue;
 		if (isFromFuture(value)) {

@@ -20,7 +20,8 @@ import {
 } from '../src/lib/modules/pipeline/groups';
 import { findGroupInstance, saveToLibrary, type GroupLibrary } from '../src/lib/modules/pipeline/group_library';
 import { BOUNDARY_INPUT, BOUNDARY_OUTPUT, groupView, saveGroupView } from '../src/lib/modules/flow/utils/group_view';
-import { boundaryPort, editPort, exposePort, NEW_GROUP_PORT, survivingGroupPath } from '../src/lib/modules/flow/utils/group_ports';
+import { boundaryPort, cutGroupWires, editPort, exposePort, NEW_GROUP_PORT, survivingGroupPath } from '../src/lib/modules/flow/utils/group_ports';
+import { assertRewireAcyclic } from '../src/lib/modules/flow/utils/wiring';
 import { groupPathFromPage, groupPathFromUrl, groupUrl } from '../src/lib/modules/flow/utils/group_navigation';
 import { createHistoryRestorer } from '../src/lib/modules/flow/utils/history_restore';
 import { withDefaults } from '../src/lib/modules/pipeline/defaults';
@@ -52,7 +53,7 @@ const routing = (g: ReturnType<typeof expand>) => ({
 	nodes: g.nodes.map((n) => ({ id: n.id, kind: n.kind, data: n.data })).sort((a, b) => a.id.localeCompare(b.id)),
 	edges: [...g.edges].sort((a, b) => a.id.localeCompare(b.id))
 });
-const empty = (): GroupLibrary => ({ version: 3, pipelines: {}, definitions: {} });
+const empty = (): GroupLibrary => ({ version: 4, pipelines: {}, definitions: {} });
 const group = (doc: GroupDocument, id: string): GroupNode => definition(doc, doc.root).nodes.find((n) => n.id === id) as GroupNode;
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -94,12 +95,12 @@ describe('reusable node groups', () => {
 		editPort(d, 'inputs', input, 'remove');
 		expect(() => expand(doc)).toThrow('Missing input port');
 	});
-	it('accepts only new boundary sockets and keeps them out of the audio graph', () => {
+	it('identifies new and existing boundary sockets and keeps temporary wires out of the audio graph', () => {
 		const input = { source: BOUNDARY_INPUT, sourceHandle: NEW_GROUP_PORT, target: 'a', targetHandle: 'ch1' };
 		const output = { source: 'a', sourceHandle: 'ch1', target: BOUNDARY_OUTPUT, targetHandle: NEW_GROUP_PORT };
 		expect(boundaryPort(input)).toEqual({ side: 'inputs', node: 'a', handle: 'ch1' });
 		expect(boundaryPort(output)).toEqual({ side: 'outputs', node: 'a', handle: 'ch1' });
-		expect(boundaryPort({ ...input, sourceHandle: 'existing' })).toBeNull();
+		expect(boundaryPort({ ...input, sourceHandle: 'existing' })).toEqual({ side: 'inputs', node: 'a', handle: 'ch1', port: 'existing' });
 		expect(boundaryPort({ ...input, target: BOUNDARY_OUTPUT, targetHandle: NEW_GROUP_PORT })).toBeNull();
 		const doc = documentFor(pipeline());
 		const id = groupSelection(doc, [], ['a']);
@@ -107,6 +108,138 @@ describe('reusable node groups', () => {
 		const before = routing(expand(doc));
 		saveGroupView(doc, [id], view.nodes, [...view.edges, { ...input, id: 'temporary' }]);
 		expect(routing(expand(doc))).toEqual(before);
+	});
+	it('cuts interior mappings while retaining external socket IDs, labels, cables and saved state', () => {
+		const p = pipeline();
+		const doc = documentFor(p);
+		const id = groupSelection(doc, [], ['a']);
+		const d = scopeAt(doc, [id]);
+		const before = routing(expand(doc));
+		const external = structuredClone(definition(doc, doc.root).edges);
+		const ports = structuredClone([...d.inputs, ...d.outputs]);
+		const view = groupView(doc, [id]);
+		cutGroupWires(doc, [id], view.edges, new Set(view.edges.map((e) => e.id)));
+		expect(definition(doc, doc.root).edges).toEqual(external);
+		expect([...d.inputs, ...d.outputs]).toEqual(ports.map((p) => ({ ...p, disconnected: true })));
+		expect(groupView(doc, [id]).edges).toEqual([]);
+		expect(expand(doc).edges.map((e) => e.id)).toEqual(['out']);
+		const saved = documentFor(JSON.parse(JSON.stringify(materialize(p, doc))));
+		expect(scopeAt(saved, [id]).inputs[0].disconnected).toBe(true);
+		expect(routing(expand(saved))).toEqual(routing(expand(doc)));
+		for (const side of ['inputs', 'outputs'] as const)
+			for (const port of [...d[side]]) expect(exposePort(d, side, port.node, port.handle, 'Ignore replacement label', port.id)).toBe(true);
+		expect([...d.inputs, ...d.outputs]).toEqual(ports);
+		expect(routing(expand(doc))).toEqual(before);
+	});
+	it('reconnects a cut socket to a different interior endpoint without changing its ID', () => {
+		const doc = documentFor(pipeline());
+		const id = groupSelection(doc, [], ['a', 'b']);
+		const d = scopeAt(doc, [id]);
+		const port = d.inputs[0];
+		const original = structuredClone(port);
+		port.disconnected = true;
+		expect(exposePort(d, 'inputs', 'a', 'ch1', 'New label', port.id)).toBe(true);
+		expect(d.inputs).toEqual([original]);
+		port.disconnected = true;
+		expect(exposePort(d, 'inputs', 'b', 'ch2', 'New label', port.id)).toBe(true);
+		expect(d.inputs[0]).toEqual({ ...original, node: 'b', handle: 'ch2' });
+		expect(() => exposePort(d, 'inputs', 'a', 'ch1', 'Replace connected', port.id)).toThrow('disconnected');
+	});
+	it('manual new-port creation never reconnects a disconnected external socket', () => {
+		const doc = documentFor(pipeline());
+		const id = groupSelection(doc, [], ['a', 'b']);
+		const d = scopeAt(doc, [id]);
+		for (const side of ['inputs', 'outputs'] as const) {
+			for (const port of d[side]) port.disconnected = true;
+			const old = structuredClone(d[side]);
+			expect(exposePort(d, side, 'b', 'ch1', 'New socket')).toBe(true);
+			expect(d[side].slice(0, old.length)).toEqual(old);
+			expect(d[side].at(-1)?.id).not.toBe(old[0].id);
+		}
+	});
+	it('cuts ordinary and boundary wires together and can restore the entire document snapshot', () => {
+		const doc = documentFor(pipeline());
+		const id = groupSelection(doc, [], ['a', 'b']);
+		const before = structuredClone(doc);
+		const view = groupView(doc, [id]);
+		cutGroupWires(doc, [id], view.edges, new Set(view.edges.map((e) => e.id)));
+		expect(scopeAt(doc, [id]).edges).toEqual([]);
+		expect(expand(doc).edges).toEqual([]);
+		expect(definition(doc, doc.root).edges).toEqual(definition(before, before.root).edges);
+		const restored = documentFor(materialize(pipeline(), before));
+		expect(routing(expand(restored))).toEqual(routing(expand(before)));
+		expect(groupView(restored, [id]).edges).toEqual(view.edges);
+	});
+	it('migrates version 4 without disconnecting or changing existing routes', () => {
+		const p = pipeline();
+		const doc = documentFor(p);
+		const id = groupSelection(doc, [], ['a']);
+		const old = { ...materialize(p, doc), version: 4 };
+		const upgraded = migrate(old);
+		expect(upgraded.version).toBe(5);
+		expect(upgraded.groups).toEqual(old.groups);
+		expect(upgraded.nodes).toEqual(old.nodes);
+		expect(upgraded.edges).toEqual(old.edges);
+		expect(scopeAt(documentFor(upgraded), [id]).inputs.every((p) => !p.disconnected)).toBe(true);
+	});
+	it('preserves a disconnected parent interface when its inner group is ungrouped', () => {
+		const doc = documentFor(pipeline());
+		const outer = groupSelection(doc, [], ['a', 'b']);
+		const inner = groupSelection(doc, [outer], ['a']);
+		const d = scopeAt(doc, [outer, inner]);
+		d.inputs[0].disconnected = true;
+		const before = routing(expand(doc));
+		const external = structuredClone(definition(doc, doc.root).edges);
+		ungroup(doc, [outer], inner);
+		expect(scopeAt(doc, [outer]).inputs[0].disconnected).toBe(true);
+		expect(definition(doc, doc.root).edges).toEqual(external);
+		expect(routing(expand(doc))).toEqual(before);
+		ungroup(doc, [], outer);
+		expect(routing(expand(doc))).toEqual(before);
+	});
+	it('retains disconnected sockets after deleting their old interior node and when making independent copies', () => {
+		const doc = documentFor(pipeline());
+		const id = groupSelection(doc, [], ['a']);
+		const d = scopeAt(doc, [id]);
+		for (const p of [...d.inputs, ...d.outputs]) p.disconnected = true;
+		d.nodes = [];
+		expect(() => expand(doc)).not.toThrow();
+		const copied = definition(doc, copyDefinition(doc, d.id));
+		expect(copied.inputs).toEqual(d.inputs);
+		expect(copied.outputs).toEqual(d.outputs);
+		expect(() => expand(doc)).not.toThrow();
+	});
+	it('propagates a cut mapping to linked instances without deleting their external cables', () => {
+		const p = pipeline();
+		const doc = documentFor(p);
+		const id = groupSelection(doc, [], ['a']);
+		const original = group(doc, id);
+		const d = scopeAt(doc, [id]);
+		const root = definition(doc, doc.root);
+		root.nodes.push({ ...structuredClone(original), id: 'linked', identity: undefined });
+		root.edges.push({ id: 'linked-in', source: 'mic', sourceHandle: 'ch1', target: 'linked', targetHandle: d.inputs[0].id });
+		let library = saveToLibrary(empty(), materialize(p, doc));
+		const changed = documentFor(library.pipelines[p.id]);
+		scopeAt(changed, [id]).inputs[0].disconnected = true;
+		library = saveToLibrary(library, materialize(library.pipelines[p.id], changed));
+		const updated = documentFor(library.pipelines[p.id]);
+		expect(scopeAt(updated, ['linked']).inputs[0].disconnected).toBe(true);
+		expect(definition(updated, updated.root).edges).toEqual(root.edges);
+		expect(expand(updated).edges.some((e) => e.id === 'in' || e.id === 'linked-in')).toBe(false);
+	});
+	it('detects an expanded audio loop when an externally wired socket is reconnected', () => {
+		const p = pipeline();
+		p.edges = [
+			{ id: 'out', source: 'b', sourceHandle: 'ch1', target: 'rec', targetHandle: 'ch1' },
+			{ id: 'in', source: 'rec', sourceHandle: 'ch1', target: 'a', targetHandle: 'ch1' }
+		];
+		const doc = documentFor(p);
+		const id = groupSelection(doc, [], ['a', 'b']);
+		const d = scopeAt(doc, [id]);
+		d.inputs[0].disconnected = true;
+		const before = expand(doc);
+		exposePort(d, 'inputs', 'b', 'ch1', 'Reconnect', d.inputs[0].id);
+		expect(() => assertRewireAcyclic(before.edges, expand(doc).edges)).toThrow('cycle');
 	});
 	it('exposes meaningful stereo ports without sidechains or spare channel sockets', () => {
 		const handles = [

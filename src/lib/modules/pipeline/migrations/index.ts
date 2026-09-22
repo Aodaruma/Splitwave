@@ -13,7 +13,9 @@ export interface Migration {
 export const MIGRATIONS: Migration[] = [
 	{ to: 1, migrate: migrateChannelRouting },
 	{ to: 2, migrate: migrateFileRecordingMode },
-	{ to: 3, migrate: (pipeline) => ({ ...pipeline, nodes: pipeline.nodes.map((n) => (n.kind === 'eq' ? { ...n, data: withDefaults('eq', n.data) } : n)) }) }
+	{ to: 3, migrate: (pipeline) => ({ ...pipeline, nodes: pipeline.nodes.map((n) => (n.kind === 'eq' ? { ...n, data: withDefaults('eq', n.data) } : n)) }) },
+	// Older readers must not reactivate disconnected group ports; existing ports remain connected.
+	{ to: 5, migrate: (pipeline) => pipeline }
 ];
 
 /** Runs every step above the pipeline's own version. Additive field changes

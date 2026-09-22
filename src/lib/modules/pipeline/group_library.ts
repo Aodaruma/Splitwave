@@ -13,7 +13,7 @@ import {
 } from './groups';
 
 export interface GroupLibrary {
-	version: 3;
+	version: 4;
 	pipelines: Record<string, Pipeline>;
 	definitions: Record<string, GroupDefinition>;
 }

@@ -9,6 +9,8 @@ export interface GroupPort {
 	label: string;
 	node: string;
 	handle?: string;
+	/** Retain the socket and its last endpoint when its interior wire is cut. */
+	disconnected?: boolean;
 }
 
 export interface GroupNode {
@@ -132,13 +134,14 @@ export function expand(doc: GroupDocument): { nodes: PipelineNode[]; edges: Pipe
 		nodeId: string,
 		handle: string | undefined,
 		side: 'inputs' | 'outputs'
-	): { node: string; handle?: string } {
+	): { node: string; handle?: string } | null {
 		const n = d.nodes.find((n) => n.id === nodeId);
 		if (!n) throw new Error(`Missing node in ${d.name}: ${nodeId}`);
 		if (n.kind !== 'group') return { node: runtimeId(doc, path, n.id), handle };
 		const inner = definition(doc, n.data.definition);
 		const port = inner[side].find((p) => p.id === handle);
 		if (!port) throw new Error(`Missing ${side === 'inputs' ? 'input' : 'output'} port in ${inner.name}: ${handle ?? '(none)'}`);
+		if (port.disconnected) return null;
 		return endpoint(inner, [...path, n.id], port.node, port.handle, side);
 	}
 	function visit(d: GroupDefinition, path: string[]) {
@@ -161,12 +164,13 @@ export function expand(doc: GroupDocument): { nodes: PipelineNode[]; edges: Pipe
 			for (const p of d[side]) {
 				if (portIds.has(p.id)) throw new Error(`Duplicate port in ${d.name}: ${p.id}`);
 				portIds.add(p.id);
-				endpoint(d, path, p.node, p.handle, side);
+				if (!p.disconnected) endpoint(d, path, p.node, p.handle, side);
 			}
 		}
 		for (const e of d.edges) {
 			const source = endpoint(d, path, e.source, e.sourceHandle, 'outputs');
 			const target = endpoint(d, path, e.target, e.targetHandle, 'inputs');
+			if (!source || !target) continue;
 			const { identity: _, data: _layout, ...edge } = e;
 			edges.push({
 				...edge,
@@ -238,7 +242,7 @@ export function groupSelection(doc: GroupDocument, path: string[], selected: str
 	// A parent interface is wiring too, even when this occurrence is unused.
 	for (const side of ['inputs', 'outputs'] as const)
 		for (const p of d[side])
-			if (chosen.has(p.node)) {
+			if (!p.disconnected && chosen.has(p.node)) {
 				p.handle = port(side, p.node, p.handle);
 				p.node = id;
 			}
@@ -260,14 +264,22 @@ export function ungroup(doc: GroupDocument, path: string[], id: string) {
 	const resolve = (side: 'inputs' | 'outputs', handle?: string) => {
 		const p = inner[side].find((p) => p.id === handle);
 		if (!p) throw new Error(`Missing port in ${inner.name}: ${handle}`);
+		if (p.disconnected) return null;
 		return { node: ids.get(p.node)!, handle: p.handle };
 	};
-	d.edges = d.edges.map((e) => {
+	d.edges = d.edges.flatMap((e) => {
 		const s = e.source === id ? resolve('outputs', e.sourceHandle) : null;
 		const t = e.target === id ? resolve('inputs', e.targetHandle) : null;
-		return { ...e, ...(s ? { source: s.node, sourceHandle: s.handle } : {}), ...(t ? { target: t.node, targetHandle: t.handle } : {}) };
+		if ((e.source === id && !s) || (e.target === id && !t)) return [];
+		return [{ ...e, ...(s ? { source: s.node, sourceHandle: s.handle } : {}), ...(t ? { target: t.node, targetHandle: t.handle } : {}) }];
 	});
-	for (const side of ['inputs', 'outputs'] as const) for (const p of d[side]) if (p.node === id) Object.assign(p, resolve(side, p.handle));
+	for (const side of ['inputs', 'outputs'] as const)
+		for (const p of d[side])
+			if (!p.disconnected && p.node === id) {
+				const endpoint = resolve(side, p.handle);
+				if (endpoint) Object.assign(p, endpoint);
+				else p.disconnected = true;
+			}
 	d.edges.push(
 		...inner.edges.map((e) => ({
 			...e,
@@ -314,7 +326,7 @@ export function assertReusableInstance(doc: GroupDocument, id: string) {
 	for (const d of Object.values(dependencies(doc, id))) {
 		const live = (node: string, handle?: string) =>
 			d.nodes.some((n) => n.id === node && n.kind === 'webRtcCollaborator') && (handle === 'mixed' || handle?.startsWith('peer:'));
-		if (d.edges.some((e) => live(e.source, e.sourceHandle)) || d.outputs.some((p) => live(p.node, p.handle))) {
+		if (d.edges.some((e) => live(e.source, e.sourceHandle)) || d.outputs.some((p) => !p.disconnected && live(p.node, p.handle))) {
 			throw new Error(
 				`“${d.name}” contains WebRTC room-specific routes. Disconnect those routes before reusing it; each new instance needs its own room.`
 			);
