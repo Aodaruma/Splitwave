@@ -202,7 +202,11 @@
 		}
 	}
 	function groupUsage(id: string) {
-		const p = getSnapshot();
+		const d = scopeAt(groupDocument, groupPath);
+		// Counts need current group references, including unsaved additions and deletions.
+		const visible = nodes.filter((n) => n.type === 'group').map((n) => ({ ...n, kind: 'group' as const, data: { definition: String(n.data.definition) } }));
+		const doc = { ...groupDocument, definitions: { ...groupDocument.definitions, [d.id]: { ...d, nodes: visible } } };
+		const p = { ...pipeline, groups: doc };
 		return usageCount({ ...groupLibrary, pipelines: { ...groupLibrary.pipelines, [p.id]: p } }, id);
 	}
 	setContext(GROUP_ACTIONS, {
@@ -1606,6 +1610,7 @@
 		addNode,
 		addNodeWithData,
 		getSnapshot,
+		getRuntimeSnapshot,
 		save: () => {
 			cancelGestures();
 			clearTimeout(saveTimer);
@@ -1651,10 +1656,24 @@
 	});
 
 	// Navigation must never turn the visible scope into the engine graph.
+	let routingCache: { doc: GroupDocument; library: GroupLibrary; input: string; signature: string; snapshot: Pipeline } | undefined;
+	function getRuntimeSnapshot(): Pipeline | null {
+		// Live controls read audio data, never editor positions or undo state.
+		return routingSignature() ? routingCache!.snapshot : null;
+	}
 	function routingSignature(): string {
 		try {
+			const input = JSON.stringify({
+				path: groupPath,
+				nodes: nodes.map((n) => ({ id: n.id, type: n.type, data: n.data })),
+				edges: edges.map((e) => ({ id: e.id, source: e.source, sourceHandle: e.sourceHandle, target: e.target, targetHandle: e.targetHandle }))
+			});
+			// Geometry changes must not clone, expand and validate the complete group document.
+			if (routingCache?.doc === groupDocument && routingCache.library === groupLibrary && routingCache.input === input) return routingCache.signature;
 			const p = getSnapshot();
-			return JSON.stringify({ nodes: p.nodes.map((n) => ({ id: n.id, kind: n.kind, data: n.data })), edges: p.edges });
+			const signature = JSON.stringify({ nodes: p.nodes.map((n) => ({ id: n.id, kind: n.kind, data: n.data })), edges: p.edges });
+			routingCache = { doc: groupDocument, library: groupLibrary, input, signature, snapshot: p };
+			return signature;
 		} catch {
 			return '';
 		}

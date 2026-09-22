@@ -35,6 +35,8 @@ export type EditorActions = {
 	addNode: (kind: NodeKind, position?: { x: number; y: number }) => void;
 	addNodeWithData: (kind: NodeKind, data: Record<string, unknown>, position?: { x: number; y: number }) => void;
 	getSnapshot: () => Pipeline | null;
+	/** Cached audio state for live controls; editor geometry may be stale. */
+	getRuntimeSnapshot: () => Pipeline | null;
 	save: () => Promise<void>;
 	patchRuntimeNode: (id: string, patch: Record<string, unknown>) => void;
 	revertToSnapshot: (p: Pipeline) => void;

@@ -10,7 +10,7 @@
 	function current(): Pipeline | null {
 		let editor: Pipeline | null = null;
 		try {
-			editor = pipelineStore.editorActions?.getSnapshot() ?? null;
+			editor = pipelineStore.editorActions?.getRuntimeSnapshot() ?? null;
 		} catch {}
 		if (!audioStore.runningPipelineId || editor?.id === audioStore.runningPipelineId) return editor ?? null;
 		return pipelineStore.pipelines.find((p) => p.id === audioStore.runningPipelineId) ?? null;
